@@ -43,7 +43,7 @@ then
   isOK=0
 fi
 
-dwimif=${bids_dir}/derivatives/${sID}/dwi/${sID}_acq-hb_dwi_de.mif
+dwimif=${bids_dir}/derivatives/${sID}/dwi/${sID}_dwi_fullypreprocessed.mif.mif
 if [ ! -f $dwimif ]
 then
   echolor red "[ERROR] Cannot find file: $dwimif"
