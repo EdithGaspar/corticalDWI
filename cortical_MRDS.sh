@@ -1,6 +1,7 @@
 #!/bin/bash
 source `which my_do_cmd`
-
+export OMP_NUM_THREADS=20
+export OMP_DISPLAY_ENV=true
 
 doParallel=1
 
