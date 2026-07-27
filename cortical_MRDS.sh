@@ -2,7 +2,6 @@
 source `which my_do_cmd`
 
 
-doParallel=1
 
 print_help () {
   echo "
@@ -10,8 +9,6 @@ print_help () {
 
   Options:
 
-  -no_parallel   : Do not multiplex this command as jobs sent to the cluster.
-                   Compute locally (a lot longer but useful if SGE is not working).
   -roi <roi>     : Binary mask (nii[.gz], but NOT mif format) to use for MRDS fitting.
                    If not provided, will use the mask in the dwi directory.
                    Remember that you can use cortical_select_streamlines_by_label.sh
@@ -36,10 +33,6 @@ do
     -h|-help)
         print_help
         exit 0
-    ;;
-    -no_parallel)
-      doParallel=0
-      shift
     ;;
     -roi)
       roi=$2
@@ -73,9 +66,8 @@ dwi=${SUBJECTS_DIR}/${sID}/dwi/dwi.nii.gz
 bvec=${SUBJECTS_DIR}/${sID}/dwi/dwi.bvec
 bval=${SUBJECTS_DIR}/${sID}/dwi/dwi.bval
 scheme=${SUBJECTS_DIR}/${sID}/dwi/dwi.scheme
-outbase=${SUBJECTS_DIR}/${sID}/dwi/${sID}
-nVoxPerJob=10000
-scratch_dir=${SUBJECTS_DIR}/${sID}/dwi/tmp
+outdir=${SUBJECTS_DIR}/${sID}/dwi/mrds/
+outbase=${outdir}/${sID}
 
 if [ ! -z "$roi" ]
 then
@@ -108,7 +100,7 @@ echolor green "[INFO] Will fit MRDS in $nVoxels voxels"
 
 
 doComputeMRDS=1
-fcheck=$(ls ${outbase}_MRDS_Diff_BIC_FA.ni*)
+fcheck=$(ls ${outbase}_MRDS_Diff_FTest_FA.ni*)
 echolor green "[INFO] Looking for file: $fcheck"
 if [ ! -z ${fcheck} ]
 then
@@ -118,30 +110,42 @@ then
 fi
 
 
+
 if [ $doComputeMRDS -eq 1 ]
 then
-  if [ ! -d $scratch_dir ]
+  mkdir -pv $outdir
+    my_do_cmd dti \
+      -mask $mask \
+      -response 0 \
+      -correction 0 \
+      -fa -md \
+      $dwi \
+      $scheme \
+      ${outbase}
+    nAnisoVoxels=`fslstats ${outbase}_DTInolin_ResponseAnisotropicMask.nii -V | awk '{print $1}'`
+  if [ $nAnisoVoxels -lt 1 ]
   then
-    echolor green "[INFO] Creating directory $scratch_dir"
-    mkdir $scratch_dir
+    echolor red "[ERROR] Not enough anisotropic voxels found for estimation of response. Found $nAnisoVoxels"
   fi
-  ## Define if parallel or not
-  if [ $doParallel -eq 1 ]
-  then
-    my_do_cmd inb_mrds_sge.sh \
-    $dwi \
-    $scheme \
-    $mask \
-    $outbase \
-    $nVoxPerJob \
-    $scratch_dir
-  else
-    my_do_cmd inb_mrds.sh \
-    $dwi \
-    $scheme \
-    $mask \
-    $outbase
-  fi
+  echolor yellow "Getting lambdas for response (from $nAnisoVoxels voxels)"
+  response=`cat ${outbase}_DTInolin_ResponseAnisotropic.txt | awk '{OFS = "," ;print $1,$2}'`
+
+  
+  my_do_cmd mdtmrds \
+  $dwi \
+  $scheme \
+  ${outbase} \
+  -correction 0 \
+  -response "$response" \
+  -mask $mask \
+  -modsel ftest \
+  -each \
+  -fa -md -mse \
+  -method diff \
+  -lowb 2000 \
+  -ntensors 3 \
+  1
+
 else
   echolor yellow "[INFO] Will not run MRDS"
 fi
@@ -160,7 +164,7 @@ then
 fi
 
 
-for f in ${outbase}_MRDS_Diff_BIC_{PDDs_CARTESIAN,COMP_SIZE,FA,MD}.ni*
+for f in ${outbase}_MRDS_Diff_FTest_{PDDs_CARTESIAN,COMP_SIZE,FA,MD}.ni*
 do
   if [ ! -f $f ]
   then
@@ -178,15 +182,15 @@ then
    tmpDir=$(mktemp -u)
     my_do_cmd inb_mrds_scalePDDs.sh \
         -e 0.0000000000000001 \
-        ${SUBJECTS_DIR}/${sID}/dwi/${sID}_MRDS_Diff_BIC_PDDs_CARTESIAN.nii.gz \
-        ${SUBJECTS_DIR}/${sID}/dwi/${sID}_MRDS_Diff_BIC_${v}.nii.gz \
-        ${SUBJECTS_DIR}/${sID}/dwi/${sID}_MRDS_Diff_BIC_PDDs_CARTESIAN_scaled-by-${v}.nii.gz
+        ${outbase}_MRDS_Diff_FTest_PDDs_CARTESIAN.nii.gz \
+        ${outbase}_MRDS_Diff_FTest_${v}.nii.gz \
+        ${outbase}_MRDS_Diff_FTest_PDDs_CARTESIAN_scaled-by-${v}.nii.gz
 
     my_do_cmd peaks2fixel \
-        ${SUBJECTS_DIR}/${sID}/dwi/${sID}_MRDS_Diff_BIC_PDDs_CARTESIAN_scaled-by-${v}.nii.gz \
+        ${outbase}_MRDS_Diff_FTest_PDDs_CARTESIAN_scaled-by-${v}.nii.gz \
         $tmpDir
     mv -v ${tmpDir}/amplitudes.mif \
-        ${SUBJECTS_DIR}/${sID}/dwi/mrds_fixels/MRDS_DIFF_BIC_${v}.mif
+        ${SUBJECTS_DIR}/${sID}/dwi/mrds_fixels/MRDS_DIFF_FTest_${v}.mif
     mv -v ${tmpDir}/{directions,index}.mif ${SUBJECTS_DIR}/${sID}/dwi/mrds_fixels/
     rm -fR $tmpDir
     done
