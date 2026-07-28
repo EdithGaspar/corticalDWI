@@ -91,11 +91,3 @@ dwi2mask   -fslgrad $bvec $bval $dwinii $maskdwi
 dwiextract -fslgrad $bvec $bval -bzero $dwinii - | \
   mrmath -axis 3 - mean - | \
   mrcalc $maskdwi - -mul $b0
-dwi2tensor -mask $maskdwi -fslgrad $bvec $bval $dwinii $dt
-tensor2metric \
-  -fa  $fa \
-  -adc $md \
-  -rd  $rd \
-  -ad  $ad \
-  -vector $v1 \
-  $dt
