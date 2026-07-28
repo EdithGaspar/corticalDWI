@@ -9,16 +9,17 @@ CLim and colormap controls for both data and asymmetry surfaces.
 Usage:
     python cortical_browser.py [subjects_dir] [subj_id] [--port PORT]
 """
-import os, sys, glob, json, time, threading, webbrowser, argparse, tempfile, re, warnings
+import os, sys, glob, json, time, threading, webbrowser, argparse, tempfile, re, warnings, shutil, atexit
 import numpy as np
 import nibabel as nib
 import h5py
 
 sys.path.insert(0, os.path.dirname(__file__))
 from cortical_io import read_mrtrix_tsf, pad_to_matrix
+from cortical_browser_config import TEMPLATE, METRICS   # shared with the normative builder
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 
-TEMPLATE        = 'ico6_sym'
 STEP_MM         = 0.5
 NIIVUE_CDN      = 'https://cdn.jsdelivr.net/npm/@niivue/niivue/dist/index.js'
 CHARTJS_CDN     = 'https://cdn.jsdelivr.net/npm/chart.js/dist/chart.umd.min.js'
@@ -32,19 +33,33 @@ _HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <title>Cortical Browser — __SUBJ_ID__</title>
 <style>
-:root { --accent-yellow: #F5C842; }   /* selected-vertex accent, shared by box/crosshair/plot line */
+:root {
+  --accent-yellow: #F5C842;   /* selected-vertex accent, shared by box/crosshair/plot line */
+  --plot-text: #dddddd;       /* CSS twin of the JS PLOT_TEXT const (plot + colorbar text) */
+}
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   background: #1f1f1f; color: #ccc;
   font: 11px/1.4 -apple-system, "Segoe UI", Arial, sans-serif;
-  display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  display: flex; flex-direction: row; height: 100vh; overflow: hidden;
 }
-header {
-  background: #2b2b2b; border-bottom: 1px solid #444444;
-  padding: 3px 8px; display: flex; align-items: center;
-  gap: 6px; flex-shrink: 0; flex-wrap: wrap;
+/* Fixed-width control column on the left: sections never reflow, so every
+   control keeps a stable position. Scrolls vertically if it overflows. */
+#sidebar {
+  width: 224px; flex-shrink: 0; height: 100vh; overflow-y: auto; overflow-x: hidden;
+  background: #2b2b2b; border-right: 1px solid #444444;
+  padding: 6px 8px 14px; display: flex; flex-direction: column; gap: 6px;
 }
+#main { flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; }
+.ctl-group { display: flex; flex-direction: column; gap: 4px; padding-top: 5px; border-top: 1px solid #3a3a3a; }
+.ctl-h {
+  color: var(--accent-yellow); font-size: 9px; letter-spacing: 0.8px;
+  text-transform: uppercase; font-weight: bold; opacity: 0.9; margin: 1px 0;
+}
+.ctl-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+#sidebar select { max-width: 100%; }
 .apptitle { font-weight: bold; color: var(--accent-yellow); font-size: 12px; letter-spacing: 0.5px; white-space: nowrap; }
+.space { color: #999; font-size: 10px; white-space: nowrap; }
 .subj { font-weight: bold; color: #f0f0f0; font-size: 12px; white-space: nowrap; }
 .glab { color: #d1d1d1; font-size: 10px; white-space: nowrap; }
 label { display: flex; align-items: center; gap: 3px; white-space: nowrap; color: #999; }
@@ -78,21 +93,32 @@ button.cbtn {
 }
 button.cbtn:hover { background: #484848; }
 #depth-label { color: #d1d1d1; min-width: 40px; }
-#pos-display  { color: #999999; font-size: 10px; white-space: nowrap; overflow: hidden; max-width: 200px; }
+#pos-display  { color: #999999; font-size: 11px; max-width: 100%; white-space: pre-line; font-family: monospace; }
 #vtx-display  {
   color: #ccc; font-size: 11px; font-family: monospace; font-weight: bold;
   background: #262626; border: 1px solid #555555; border-radius: 3px;
-  padding: 1px 7px; margin-left: auto; white-space: nowrap; min-width: 76px;
+  padding: 1px 7px; white-space: nowrap; min-width: 76px;
   text-align: center;
 }
-.sep { border-left: 1px solid #444444; height: 14px; flex-shrink: 0; }
 #grid {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  grid-template-rows: 1fr 1fr 1fr;
+  /* four content rows separated by three draggable gutter tracks; the content
+     row sizes are driven by --gr1..--gr4 so gutters can rescale them live */
+  grid-template-rows: var(--gr1,1fr) 7px var(--gr2,1fr) 7px var(--gr3,1fr) 7px var(--gr4,1fr);
   flex: 1; gap: 2px; background: #0a0a0a; overflow: hidden;
 }
 .cell { position: relative; overflow: hidden; background: #141414; }
+/* pin each panel group to its content row (tracks 1,3,5,7) so auto-placement
+   never lands a panel in a gutter track */
+.grow1 { grid-row: 1; } .grow2 { grid-row: 3; } .grow3 { grid-row: 5; } .grow4 { grid-row: 7; }
+/* draggable row-resize gutters, spanning all columns */
+.rgutter { grid-column: 1 / -1; cursor: row-resize; background: #0a0a0a; touch-action: none; }
+.rgutter:hover { background: var(--accent-yellow); }
+/* double-click maximize: only the maximized panel is shown, filling the grid */
+#grid.has-max > .cell:not(.maxed) { display: none; }
+#grid.has-max > .rgutter { display: none; }
+#grid.has-max > .cell.maxed { grid-row: 1 / -1 !important; grid-column: 1 / -1 !important; }
 canvas.nv-canvas { display: block; width: 100% !important; height: 100% !important; }
 .clabel {
   position: absolute; top: 4px; left: 6px; z-index: 10;
@@ -101,6 +127,15 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
   padding: 1px 5px; border-radius: 3px; pointer-events: none;
 }
 .cell-span3 { grid-column: 1 / -1; }
+/* per-panel maximize/restore button (top-right corner) */
+.maxbtn {
+  position: absolute; top: 3px; right: 3px; z-index: 15;
+  width: 18px; height: 18px; line-height: 16px; text-align: center;
+  font-size: 12px; color: #cfcfcf;
+  background: rgba(0,0,0,0.5); border: 1px solid #555555; border-radius: 3px;
+  cursor: pointer; padding: 0; opacity: 0.45;
+}
+.maxbtn:hover { opacity: 1; color: var(--accent-yellow); border-color: var(--accent-yellow); }
 .plot-cell { display: flex; flex-direction: column; padding: 20px 5px 4px; }
 .chart-wrap { position: relative; flex: 1; min-height: 0; background: #242424; }
 .cbar {
@@ -108,101 +143,160 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
 }
 .cbar-title {
   display: block; text-align: center;
-  font-size: 9px; color: #999999; margin-bottom: 2px; font-family: monospace;
+  font-size: 11px; color: var(--plot-text); margin-bottom: 2px; font-family: monospace;
 }
 .cbar-g {
   height: 8px; border-radius: 2px; border: 1px solid rgba(255,255,255,0.08);
 }
 .cbar-ll {
   display: flex; justify-content: space-between;
-  font-size: 9px; color: #999999; margin-top: 2px; font-family: monospace;
+  font-size: 11px; color: var(--plot-text); margin-top: 2px; font-family: monospace;
 }
 </style>
 </head>
 <body>
 
-<header>
-  <span class="apptitle">CORTICAL BROWSER</span>
-  <span class="subj">__SUBJ_ID__</span>
-  <div class="sep"></div>
+<aside id="sidebar">
+  <div class="apptitle">CORTICAL BROWSER</div>
+  <div class="space">T1 space</div>
+  <div class="subj">__SUBJ_ID__</div>
+  <button class="cbtn" id="openDwiBtn" title="Open the FA map in DWI space in a new tab, with the DWI-space streamlines overlaid. The crosshair there follows the vertex/depth selected here.">Open DWI space</button>
 
-  <label>Metric <select id="metricSel">__METRIC_OPTIONS__</select></label>
-  <label>Depth
-    <input type="range" id="depthSlider" min="0" max="__MAX_DEPTH__" value="__INIT_DEPTH__">
-    <span id="depth-label">__INIT_DEPTH_MM__ mm</span>
-  </label>
-  <div class="sep"></div>
+  <section class="ctl-group">
+    <h3 class="ctl-h">Global</h3>
+    <div class="ctl-row"><label>Metric <select id="metricSel">__METRIC_OPTIONS__</select></label></div>
+    <div class="ctl-row"><label>Depth
+      <input type="range" id="depthSlider" min="0" max="__MAX_DEPTH__" value="__INIT_DEPTH__">
+      <span id="depth-label">__INIT_DEPTH_MM__ mm</span></label></div>
+  </section>
 
-  <span class="glab">Data</span>
-  <input type="number" id="climMin" step="0.001" title="Color min">
-  <span style="color:#999999">–</span>
-  <input type="number" id="climMax" step="0.001" title="Color max">
-  <button class="cbtn" id="climAuto">Auto</button>
-  <select id="cmapSel">
-    <option value="viridis">viridis</option>
-    <option value="hot">hot</option>
-    <option value="inferno">inferno</option>
-    <option value="plasma">plasma</option>
-    <option value="magma">magma</option>
-    <option value="cividis">cividis</option>
-    <option value="thermal">thermal</option>
-    <option value="batlow">batlow</option>
-    <option value="cool">cool</option>
-    <option value="warm">warm</option>
-    <option value="gray">gray</option>
-    <option value="bone">bone</option>
-    <option value="copper">copper</option>
-    <option value="jet">jet</option>
-  </select>
-  <label><input type="checkbox" id="cmapInv"> Inv</label>
-  <label>Ov <input type="range" id="ovOp" min="0" max="100" value="100"></label>
-  <div class="sep"></div>
+  <section class="ctl-group">
+    <h3 class="ctl-h">Surfaces</h3>
+    <div class="ctl-row">
+      <span class="glab">Data</span>
+      <input type="number" id="climMin" step="0.001" title="Color min">
+      <span style="color:#999999">–</span>
+      <input type="number" id="climMax" step="0.001" title="Color max">
+      <button class="cbtn" id="climAuto">Auto</button>
+    </div>
+    <div class="ctl-row">
+      <label>cmap <select id="cmapSel"></select></label>
+      <label><input type="checkbox" id="cmapInv"> Inv</label>
+      <label>Ov <input type="range" id="ovOp" min="0" max="100" value="100"></label>
+    </div>
+    <div class="ctl-row">
+      <span class="glab">Asym</span>
+      <input type="number" id="asymMin" step="0.001" title="Asym color min">
+      <span style="color:#999999">–</span>
+      <input type="number" id="asymMax" step="0.001" title="Asym color max">
+      <button class="cbtn" id="asymAuto">Auto</button>
+    </div>
+    <div class="ctl-row">
+      <label>cmap <select id="cmapAsymSel">
+        <option value="bwr">blue-white-red</option>
+        <option value="cwr">cyan-white-red</option>
+        <option value="gwr">green-white-red</option>
+        <option value="blue2red">blue2red (hue)</option>
+        <option value="blue2magenta">blue2magenta</option>
+        <option value="hsv">hsv</option>
+        <option value="jet">jet</option>
+      </select></label>
+      <label><input type="checkbox" id="cmapAsymInv"> Inv</label>
+    </div>
+    <div class="ctl-row"><label>Shader <select id="shaderSel">
+      <option value="Matte">Matte</option>
+      <option value="Phong">Phong</option>
+      <option value="Diffuse" selected>Diffuse</option>
+    </select></label></div>
+    <div class="ctl-row">
+      <label>LH surf <select id="lhSurfSel"></select></label>
+      <label>RH surf <select id="rhSurfSel"></select></label>
+      <label>Asym surf <select id="asymSurfSel"></select></label>
+    </div>
+    <div class="ctl-row">
+      <label>Vertex <input type="number" id="vtxInput" min="0" step="1" title="Jump to vertex ID"></label>
+      <label>Rings <input type="number" id="ringsInput" min="0" step="1" value="0" title="Neighbor rings to average around the selected vertex"></label>
+    </div>
+    <div class="ctl-row">
+      <button class="cbtn" id="loadVertexIdsBtn" title="Load a .txt file of vertex indices (one per line). While loaded, this set replaces interactive vertex/rings selection everywhere — plots, streamlines, and the DWI-space link.">Load vertex IDs</button>
+      <button class="cbtn" id="saveVertexIdsBtn" title="Save the current selection (however it was made) as a .txt file, one vertex ID per line — the same format Load vertex IDs reads">Save vertex IDs</button>
+      <button class="cbtn" id="unloadVertexIdsBtn" disabled title="Discard the loaded vertex ID list and return to interactive click/Vertex/Rings selection">Unload vertex IDs</button>
+    </div>
+    <input type="file" id="vertexIdsFile" accept=".txt" style="display:none">
+    <div class="ctl-row"><span id="vertexIdsStatus" class="glab"></span></div>
+    <div class="ctl-row">
+      <label><input type="checkbox" id="pivotAtVertexChk"> Pivot@vertex</label>
+      <button class="cbtn" id="resetPivotBtn" title="Reset 3D view rotation pivot to the whole-brain center">Reset pivot</button>
+    </div>
+    <div class="ctl-row"><span id="vtx-display">—, —, — mm</span></div>
+  </section>
 
-  <span class="glab">Asym</span>
-  <input type="number" id="asymMin" step="0.001" title="Asym color min">
-  <span style="color:#999999">–</span>
-  <input type="number" id="asymMax" step="0.001" title="Asym color max">
-  <button class="cbtn" id="asymAuto">Auto</button>
-  <select id="cmapAsymSel">
-    <option value="bwr">blue-white-red</option>
-    <option value="cwr">cyan-white-red</option>
-    <option value="gwr">green-white-red</option>
-    <option value="blue2red">blue2red (hue)</option>
-    <option value="blue2magenta">blue2magenta</option>
-    <option value="hsv">hsv</option>
-    <option value="jet">jet</option>
-  </select>
-  <label><input type="checkbox" id="cmapAsymInv"> Inv</label>
-  <div class="sep"></div>
+  <section class="ctl-group">
+    <h3 class="ctl-h">Orthoslices</h3>
+    <div class="ctl-row"><label title="Volume shown in the orthoslices">Volume <select id="volSel"></select></label></div>
+    <div class="ctl-row"><label title="Colormap for the orthoslice volume">cmap <select id="volCmapSel"></select></label></div>
+    <div class="ctl-row">
+      <input type="number" id="volClipMin" step="any" title="Orthoslice color min (clip)">
+      <span style="color:#999999">–</span>
+      <input type="number" id="volClipMax" step="any" title="Orthoslice color max (clip)">
+      <button class="cbtn" id="volClipAuto" title="Reset the orthoslice color range to the volume default">Auto</button>
+    </div>
+    <input type="file" id="volFile" accept=".nii,.nii.gz,.gz,.mgz,.mgh,.hdr,.img" style="display:none">
+    <div class="ctl-row">
+      <label><input type="checkbox" id="radioConv" checked> Rad</label>
+      <label><input type="checkbox" id="crosshairChk" checked> X-hair</label>
+      <label title="Smooth (linear) vs nearest-neighbor orthoslice interpolation — shortcut: i"><input type="checkbox" id="interpChk" checked> Interp</label>
+    </div>
+    <div class="ctl-row">
+      <label title="Overlay white-matter surface outline on the orthoslices (loaded on first use)"><input type="checkbox" id="contourWmChk"> WM</label>
+      <label title="Overlay pial surface outline on the orthoslices (loaded on first use)"><input type="checkbox" id="contourPialChk"> pial</label>
+    </div>
+    <div class="ctl-row">
+      <label title="In the 3-D panel, cut away the octant nearest the crosshair so the volume render is opened up along the three orthogonal slice planes, instead of showing an opaque whole-brain render — shortcut: c"><input type="checkbox" id="cutaway3DChk"> 3D cutaway</label>
+      <label title="Flip which octant the 3D cutaway removes"><input type="checkbox" id="cutawayInvertChk"> Invert</label>
+    </div>
+    <div class="ctl-row"><span id="pos-display"></span></div>
+  </section>
 
-  <label>Shader <select id="shaderSel">
-    <option value="Matte">Matte</option>
-    <option value="Phong">Phong</option>
-    <option value="Diffuse" selected>Diffuse</option>
-  </select></label>
-  <div class="sep"></div>
+  <section class="ctl-group">
+    <h3 class="ctl-h">Streamlines</h3>
+    <div class="ctl-row">
+      <button class="cbtn" id="loadStreamlinesBtn" title="Load LH/RH Laplace white-matter streamlines (.tck) overlaid on the orthoslices">Load streamlines</button>
+      <label title="Show/hide the loaded streamlines on the orthoslices"><input type="checkbox" id="streamlineVisibleChk" checked disabled> Show</label>
+    </div>
+    <div class="ctl-row">
+      <label title="Which streamlines to display: every one, or only those seeded from the selected vertex/rings">
+        <select id="streamlineModeSel" disabled>
+          <option value="selected" selected>Selected vertex</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+    </div>
+    <div class="ctl-row">
+      <label title="Color streamlines by their start-to-end direction, or a single fixed color">Color
+        <select id="streamlineColorSel" disabled>
+          <option value="direction" selected>Direction</option>
+          <option value="fixed">Custom</option>
+        </select>
+      </label>
+      <input type="color" id="streamlineColorPicker" value="#f5c842" disabled style="display:none" title="Custom streamline color">
+    </div>
+  </section>
 
-  <label>LH surf <select id="lhSurfSel"></select></label>
-  <label>RH surf <select id="rhSurfSel"></select></label>
-  <label>Asym surf <select id="asymSurfSel"></select></label>
-  <div class="sep"></div>
-
-  <label><input type="checkbox" id="radioConv" checked> Rad</label>
-  <label><input type="checkbox" id="crosshairChk" checked> X-hair</label>
-  <label title="Overlay white-matter surface outline on the orthoslices (loaded on first use)"><input type="checkbox" id="contourWmChk"> WM</label>
-  <label title="Overlay pial surface outline on the orthoslices (loaded on first use)"><input type="checkbox" id="contourPialChk"> pial</label>
-  <label>Vertex <input type="number" id="vtxInput" min="0" step="1" title="Jump to vertex ID"></label>
-  <label>Rings <input type="number" id="ringsInput" min="0" step="1" value="0" title="Neighbor rings to average around the selected vertex"></label>
-  <label><input type="checkbox" id="pivotAtVertexChk"> Pivot@vertex</label>
-  <button class="cbtn" id="resetPivotBtn" title="Reset 3D view rotation pivot to the whole-brain center">Reset pivot</button>
-  <label><input type="checkbox" id="showNormativeChk" title="Fetch and overlay cohort normative mean ± SD (computed lazily on first use)"> Show normative</label>
-  <span id="pos-display"></span>
-  <span id="vtx-display">—, —, — mm</span>
-</header>
+  <section class="ctl-group">
+    <h3 class="ctl-h">Plots</h3>
+    <div class="ctl-row"><label><input type="checkbox" id="showNormativeChk" title="Fetch and overlay cohort normative mean ± SD (computed lazily on first use)"> Show normative</label></div>
+    <div class="ctl-row">
+      <label title="Max |z| shown on the radar and z-score bar panels">|z|≤ <input type="number" id="mvZlimInput" min="0.5" step="0.5" value="3"></label>
+      <label title="Max Mahalanobis distance shown on the multivariate depth panel">Mahal≤ <input type="number" id="mvMahalInput" min="1" step="1" value="10"></label>
+    </div>
+  </section>
+</aside>
+<main id="main">
 
 <div id="grid">
   <!-- Row 1: surface 3-D renders -->
-  <div class="cell">
+  <div class="cell grow1">
     <canvas id="gl-lh" class="nv-canvas"></canvas>
     <span class="clabel">LH lateral</span>
     <div class="cbar">
@@ -211,7 +305,7 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
       <div class="cbar-ll"><span id="cblbl-lh-min">0</span><span id="cblbl-lh-max">1</span></div>
     </div>
   </div>
-  <div class="cell">
+  <div class="cell grow1">
     <canvas id="gl-rh" class="nv-canvas"></canvas>
     <span class="clabel">RH lateral</span>
     <div class="cbar">
@@ -220,7 +314,7 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
       <div class="cbar-ll"><span id="cblbl-rh-min">0</span><span id="cblbl-rh-max">1</span></div>
     </div>
   </div>
-  <div class="cell">
+  <div class="cell grow1">
     <canvas id="gl-asym" class="nv-canvas"></canvas>
     <span class="clabel">Asymmetry index (LH geom)</span>
     <div class="cbar">
@@ -231,24 +325,44 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
   </div>
 
   <!-- Row 2: single multiplanar orthoslice (row layout = axial/coronal/sagittal side by side) -->
-  <div class="cell cell-span3">
+  <div class="cell cell-span3 grow2">
     <canvas id="gl-slices" class="nv-canvas"></canvas>
   </div>
 
   <!-- Row 3: depth-profile charts -->
-  <div class="cell plot-cell">
+  <div class="cell plot-cell grow3">
     <span class="clabel">LH depth profile</span>
     <div class="chart-wrap"><canvas id="chart-lh"></canvas></div>
   </div>
-  <div class="cell plot-cell">
+  <div class="cell plot-cell grow3">
     <span class="clabel">RH depth profile</span>
     <div class="chart-wrap"><canvas id="chart-rh"></canvas></div>
   </div>
-  <div class="cell plot-cell">
+  <div class="cell plot-cell grow3">
     <span class="clabel">Asymmetry profile</span>
     <div class="chart-wrap"><canvas id="chart-asym"></canvas></div>
   </div>
+
+  <!-- Row 4: multivariate explorer (Mahalanobis / |z| radar / z-score bars) -->
+  <div class="cell plot-cell grow4">
+    <span class="clabel" id="clabel-mahal">Mahalanobis distance</span>
+    <div class="chart-wrap"><canvas id="chart-mahal"></canvas></div>
+  </div>
+  <div class="cell plot-cell grow4">
+    <span class="clabel" id="clabel-radar">|Z-score| radar</span>
+    <div class="chart-wrap"><canvas id="chart-radar"></canvas></div>
+  </div>
+  <div class="cell plot-cell grow4">
+    <span class="clabel" id="clabel-zbar">Z-scores</span>
+    <div class="chart-wrap"><canvas id="chart-zbar"></canvas></div>
+  </div>
+
+  <!-- Draggable row-resize gutters (placed into the gutter tracks 2/4/6) -->
+  <div class="rgutter" data-above="1" data-below="2" style="grid-row:2"></div>
+  <div class="rgutter" data-above="2" data-below="3" style="grid-row:4"></div>
+  <div class="rgutter" data-above="3" data-below="4" style="grid-row:6"></div>
 </div>
+</main>
 
 <script src="__CHARTJS_CDN__"></script>
 <script src="__CHARTJS_ANN_CDN__"></script>
@@ -259,9 +373,15 @@ import * as niivue from "__NIIVUE_CDN__"
 const VOLUMES  = __VOLUMES_JSON__
 const SURFS    = __SURFS_JSON__
 const SURF_TYPES = __SURF_TYPES_JSON__
+const STREAMLINES = __STREAMLINES_JSON__
+const DWI_AVAILABLE = __DWI_AVAILABLE_JSON__
 const NORMATIVE = __NORMATIVE_JSON__
 const METRICS  = __METRICS_JSON__
 const BASE_URL = "__BASE_URL__"
+// Per-launch cache-buster: appended to every /data/ fetch so an immutable-cached
+// file from a previous subject (same port, same URL) can't leak into this one.
+const CACHE_BUST = "__CACHE_BUST__"
+const Q = CACHE_BUST ? `?v=${CACHE_BUST}` : ''
 const TEMPLATE = "__TEMPLATE__"
 const STEP_MM  = __STEP_MM__
 
@@ -269,6 +389,9 @@ const STEP_MM  = __STEP_MM__
 // the orthoslice crosshair, and the plots' depth reference line.
 const ACCENT_YELLOW = '#F5C842'
 const ACCENT_YELLOW_RGBA = [0xF5/255, 0xC8/255, 0x42/255, 1]
+
+// Shared light-gray text color for all plot axis labels, titles, and legends.
+const PLOT_TEXT = '#dddddd'
 
 // ── app state ─────────────────────────────────────────────────────────────────
 let currentMetric  = Object.keys(METRICS)[0] || null
@@ -289,8 +412,17 @@ let showNormative = false
 const markerMeshes = new Map()   // nv instance -> its vertex-marker connectome mesh
 const neighborMeshes = new Map() // nv instance -> its neighbor-rings connectome mesh
 
+// ── multivariate (Mahalanobis / z-score) explorer state ──────────────────────
+// Available only when the server found cohort data (same gate as normative).
+const MV_AVAILABLE = Object.keys(NORMATIVE).length > 0
+let mvZlim = 3            // max |z| on radar / z-bar panels (user-editable)
+let mvMahalLim = 10       // max Mahalanobis distance on the depth panel
+const mvCache = {}        // "vertex:rings" -> parsed /mahal payload
+let mvCurrent = null      // payload for the currently selected vertex
+
 // Hoisted so updateDepthMarker is safe to call before makeChart runs
 var chartLH, chartRH, chartAsym
+var chartMahal, chartRadar, chartZBar
 
 const firstInfo = currentMetric ? METRICS[currentMetric] : null
 if (firstInfo) {
@@ -309,12 +441,16 @@ const VOL_URL = VOLUMES.length ? VOLUMES[0].url : null
 // surfaces and their depth-profile plots always match.
 const rgba255ToHex = ([r, g, b]) =>
   '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
+const hexToRgba = (hex, alpha) => {
+  const n = parseInt(hex.slice(1), 16)
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`
+}
 const LH_COLOR = LH_SURF ? rgba255ToHex(LH_SURF.rgba255) : '#66B3FF'
 const RH_COLOR = RH_SURF ? rgba255ToHex(RH_SURF.rgba255) : '#FF854D'
 
 // Independently-selectable surface geometry per panel (white/pial/inflated/
-// very_inflated/average_white/average_pial) — all share the same ico6_sym
-// topology, so switching only changes vertex coordinates, not data mapping.
+// very_inflated/average_white/average_pial) — all share the same surface
+// template topology, so switching only changes vertex coordinates, not data mapping.
 let lhSurfUrl   = LH_SURF?.url ?? null
 let rhSurfUrl   = RH_SURF?.url ?? null
 let asymSurfUrl = LH_SURF?.url ?? null
@@ -332,7 +468,9 @@ const sliceContourVisible = { wm: false, pial: false }
 const SURF_CFG = { backColor: [0.06, 0.06, 0.06, 1], show3Dcrosshair: false }
 const SLIC_CFG = {
   backColor: [0.04, 0.04, 0.04, 1], show3Dcrosshair: true,
-  meshThicknessOn2D: 2, multiplanarLayout: 'row'
+  meshThicknessOn2D: 2, multiplanarLayout: 'row',
+  isColorbar: true,           // one colorbar for the ortho view (NiiVue draws it instance-wide, not per-panel)
+  showColorbarBorder: false   // drop the outline around the colorbar
 }
 
 const nvLhL   = new niivue.Niivue(SURF_CFG)
@@ -382,6 +520,22 @@ for (const nv of [nvLhL, nvRhL, nvAsym, nvSlices]) {
     }
   }
 }
+
+// Colormaps for scalar data, shared by BOTH the surface data overlays (cmapSel)
+// and the orthoslice volume (volCmapSel) so the two menus are identical. Built
+// from NiiVue's full registered set (so lipari, navia, etc. are all included),
+// minus the CT-specific clinical maps and our own diverging maps — the latter
+// live on the asymmetry menu (cmapAsymSel), since asymmetry is signed and needs
+// a white-centered map, not a sequential one.
+const CUSTOM_CMAP_NAMES = new Set(Object.keys(CUSTOM_CMAPS))
+const SURFACE_CMAPS = (nvSlices.colormaps ? nvSlices.colormaps() : ['gray'])
+  .filter(n => !/^ct[-_]/i.test(n) && !CUSTOM_CMAP_NAMES.has(n))
+  .sort()
+function fillCmapSelect(sel, selected) {
+  sel.innerHTML = SURFACE_CMAPS.map(n =>
+    `<option value="${n}"${n === selected ? ' selected' : ''}>${n}</option>`).join('')
+}
+fillCmapSelect(document.getElementById('cmapSel'), currentCmap)
 
 function applyShader(nv, name) {
   if (!nv.meshShaders) return
@@ -437,14 +591,14 @@ function resetPivot(nv) {
 function layerDataFor(hemi, metric) {
   const info = metric ? METRICS[metric] : null
   if (!info) return []
-  return [{ url: `${BASE_URL}/${hemi}_${TEMPLATE}_${metric}.func.gii`,
+  return [{ url: `${BASE_URL}/${hemi}_${TEMPLATE}_${metric}.func.gii${Q}`,
             colormap: currentCmap, colormapInvert: dataInvert,
             opacity: layerOpacity, cal_min: currentClimMin, cal_max: currentClimMax }]
 }
 function layerAsymFor(metric) {
   const info = metric ? METRICS[metric] : null
   if (!info) return []
-  return [{ url: `${BASE_URL}/asym_${TEMPLATE}_${metric}.func.gii`,
+  return [{ url: `${BASE_URL}/asym_${TEMPLATE}_${metric}.func.gii${Q}`,
             colormap: currentCmapAsym, colormapInvert: asymInvert,
             opacity: layerOpacity, cal_min: currentAsymMin, cal_max: currentAsymMax }]
 }
@@ -523,6 +677,105 @@ async function toggleSliceContour(kind, on) {
   applySliceContourVisibility(kind)
 }
 
+// LH/RH Laplace white-matter streamlines (.tck), loaded on demand
+// from the "Load streamlines" button and overlaid on the orthoslices only
+// (nvSlices, not the 3-D surface panels). meshThicknessOn2D clips every mesh
+// in nvSlices — contours and streamlines alike — to a slab around each 2-D slice
+// plane, so the streamlines render as their intersection with that plane.
+const STREAMLINE_THICKNESS_MM = 2
+let streamlineMeshes = null    // { lh, rh } once loaded
+let streamlinesVisible = true  // toggled by the "Show" checkbox once streamlines are loaded
+
+async function ensureStreamlines() {
+  if (streamlineMeshes) return streamlineMeshes
+  console.time('ensureStreamlines')
+  const [lhMesh, rhMesh] = await Promise.all([
+    STREAMLINES.lh ? niivue.NVMesh.loadFromUrl({ url: STREAMLINES.lh, gl: nvSlices.gl, rgba255: LH_SURF.rgba255 }) : null,
+    STREAMLINES.rh ? niivue.NVMesh.loadFromUrl({ url: STREAMLINES.rh, gl: nvSlices.gl, rgba255: RH_SURF.rgba255 }) : null,
+  ])
+  for (const m of [lhMesh, rhMesh]) if (m) nvSlices.addMesh(m)
+  streamlineMeshes = { lh: lhMesh, rh: rhMesh }
+  nvSlices.setMeshThicknessOn2D(STREAMLINE_THICKNESS_MM)
+  applyStreamlineVisibility()
+  console.timeEnd('ensureStreamlines')
+  return streamlineMeshes
+}
+
+function applyStreamlineVisibility() {
+  if (!streamlineMeshes) return
+  const op = streamlinesVisible ? 1 : 0
+  for (const m of [streamlineMeshes.lh, streamlineMeshes.rh]) if (m) nvSlices.setMeshProperty(m.id, 'opacity', op)
+  nvSlices.drawScene()
+}
+
+// Per-streamline filtering: the streamline files are one streamline per vertex of
+// the same ico6-sym mesh used everywhere else (LH/RH share vertex indexing —
+// see ringSet's reuse across lh/rh matrices in selectVertex()), so a vertex ID
+// is also that vertex's streamline index. NVMesh has no built-in "show only
+// these streamline indices" call, but its dps/dpsThreshold mechanism (data-
+// per-streamline + a cutoff, normally used to threshold streamlines by a
+// scalar like FA) can be repurposed: give each streamline a 0/1 "selected"
+// flag as its dps value and threshold at 0.5, so only flagged streamlines
+// survive into the index buffer that updateFibers() rebuilds on every
+// setMeshProperty call. Passing NaN as the threshold (its documented default)
+// skips that filtering step entirely, i.e. shows every streamline.
+function setStreamlineSelection(vertexIds) {
+  if (!streamlineMeshes) return
+  const selected = new Set(vertexIds)
+  for (const m of [streamlineMeshes.lh, streamlineMeshes.rh]) {
+    if (!m?.offsetPt0) continue
+    const nStreamlines = m.offsetPt0.length - 1
+    const flags = new Float32Array(nStreamlines)
+    for (const v of selected) if (v >= 0 && v < nStreamlines) flags[v] = 1
+    m.dps = [{ id: 'vertex-selection', vals: flags }]
+    nvSlices.setMeshProperty(m.id, 'dpsThreshold', 0.5)
+  }
+}
+
+function showAllStreamlines() {
+  if (!streamlineMeshes) return
+  for (const m of [streamlineMeshes.lh, streamlineMeshes.rh]) {
+    if (m) nvSlices.setMeshProperty(m.id, 'dpsThreshold', NaN)
+  }
+}
+
+// Driven by the "Streamlines" mode selector (All / Selected vertex) and
+// re-applied on every vertex/rings selection change. A no-op until streamlines
+// are actually loaded (streamlineMeshes is null until then).
+function applyStreamlineSelection() {
+  if (!streamlineMeshes) return
+  const mode = document.getElementById('streamlineModeSel').value
+  if (mode === 'all' || currentVertex === null) {
+    showAllStreamlines()
+  } else {
+    setStreamlineSelection(selectedVertices)
+  }
+}
+
+// Color selector: "direction" uses NiiVue's built-in start-to-end direction
+// coloring (fiberColor 'Global', the NVMesh default); "fixed" recolors every
+// streamline with a single user-chosen color via the color picker.
+function hexToRgba255(hex) {
+  const n = parseInt(hex.slice(1), 16)
+  return new Uint8Array([(n >> 16) & 255, (n >> 8) & 255, n & 255, 255])
+}
+function applyStreamlineColor() {
+  if (!streamlineMeshes) return
+  const mode = document.getElementById('streamlineColorSel').value
+  const picker = document.getElementById('streamlineColorPicker')
+  picker.style.display = mode === 'fixed' ? '' : 'none'
+  for (const m of [streamlineMeshes.lh, streamlineMeshes.rh]) {
+    if (!m) continue
+    if (mode === 'fixed') {
+      m.rgba255 = hexToRgba255(picker.value)
+      nvSlices.setMeshProperty(m.id, 'fiberColor', 'Fixed')
+    } else {
+      nvSlices.setMeshProperty(m.id, 'fiberColor', 'Global')
+    }
+  }
+  nvSlices.drawScene()
+}
+
 async function loadAllSurfaces(metric, resetCamera = false) {
   await Promise.all([
     loadLhPanel(metric),
@@ -540,7 +793,7 @@ const matCache = {}
 async function ensureMatrix(hemi, metric) {
   const key = `${hemi}_${metric}`
   if (matCache[key]) return matCache[key]
-  const r = await fetch(`${BASE_URL}/${hemi}_${TEMPLATE}_${metric}_matrix.f32`)
+  const r = await fetch(`${BASE_URL}/${hemi}_${TEMPLATE}_${metric}_matrix.f32${Q}`)
   matCache[key] = new Float32Array(await r.arrayBuffer())
   return matCache[key]
 }
@@ -551,7 +804,7 @@ const normCache = {}
 async function ensureNormativeMatrix(kind, metric, stat) {
   const key = `${kind}_${metric}_${stat}`
   if (normCache[key]) return normCache[key]
-  const r = await fetch(`${BASE_URL}/normative_${kind}_${metric}_${stat}.f32`)
+  const r = await fetch(`${BASE_URL}/normative_${kind}_${metric}_${stat}.f32${Q}`)
   normCache[key] = new Float32Array(await r.arrayBuffer())
   return normCache[key]
 }
@@ -567,16 +820,26 @@ async function normativeRingStat(kind, metric, ringSet) {
   // Ring-average the precomputed per-vertex cohort mean; combine per-vertex
   // SDs by averaging variances (a "pooled SD" approximation — the true
   // per-ring SD would need the raw per-subject stack, not just mean/std).
+  // The cohort mean/std files carry NaN where no subject reached a vertex/depth
+  // (nanmean in materialize_normative), so skip those rather than poisoning the
+  // ring average.
   const mean = new Array(nd).fill(0)
   const variance = new Array(nd).fill(0)
+  const cnt = new Array(nd).fill(0)
   for (const vi of ringSet) {
     for (let d = 0; d < nd; d++) {
-      mean[d]     += meanMat[vi*nd+d]
-      variance[d] += stdMat[vi*nd+d] ** 2
+      const mv = meanMat[vi*nd+d]
+      if (!Number.isFinite(mv)) continue
+      const sv = stdMat[vi*nd+d]
+      mean[d]     += mv
+      variance[d] += Number.isFinite(sv) ? sv*sv : 0
+      cnt[d]++
     }
   }
-  const n = ringSet.length
-  for (let d = 0; d < nd; d++) { mean[d] /= n; variance[d] /= n }
+  for (let d = 0; d < nd; d++) {
+    if (cnt[d]) { mean[d] /= cnt[d]; variance[d] /= cnt[d] }
+    else        { mean[d] = NaN;    variance[d] = NaN }
+  }
   return { mean, sd: variance.map(Math.sqrt), n: NORMATIVE[metric].n_subjects }
 }
 
@@ -591,7 +854,7 @@ async function loadMatrices(metric) {
 // ── initial load ──────────────────────────────────────────────────────────────
 await Promise.all([
   VOL_URL
-    ? nvSlices.loadVolumes([{ url: VOL_URL, colormap: 'gray', opacity: 1 }])
+    ? nvSlices.loadVolumes([{ url: VOL_URL, colormap: 'bone', opacity: 1 }])
     : Promise.resolve(),
   currentMetric ? loadAllSurfaces(currentMetric, true) : Promise.resolve(),
   currentMetric ? loadMatrices(currentMetric)    : Promise.resolve(),
@@ -606,13 +869,274 @@ if (nvSlices.volumes.length) {
 }
 
 // ── slice setup (single multiplanar instance) ─────────────────────────────────
-nvSlices.opts.onLocationChange = d => {
-  document.getElementById('pos-display').textContent = d.string
+// Instance callback (not opts) — NiiVue invokes this.onLocationChange(data).
+// Show the crosshair position in both world (mm) and voxel coords, plus the
+// shown volume's intensity value there.
+nvSlices.onLocationChange = d => {
+  const mm = d.mm, vox = d.vox
+  const lines = []
+  if (mm)  lines.push(`${mm[0].toFixed(1)},${mm[1].toFixed(1)},${mm[2].toFixed(1)} mm`)
+  if (vox) lines.push(`${Math.round(vox[0])},${Math.round(vox[1])},${Math.round(vox[2])} vox`)
+  const v = d.values && d.values[0]
+  if (v && isFinite(v.value)) lines.push(`value=${(+v.value).toPrecision(4)}`)
+  document.getElementById('pos-display').textContent = lines.join('\n')
+  updateCutawayClipPlanes()   // keep the 3-D cutaway centered on the crosshair; no-op unless enabled
 }
+
+// ── 3-D cutaway (crosshair-centered clip planes) ──────────────────────────────
+// NiiVue's 3-D panel is always a volume raycast — there's no built-in mode that
+// shows just the three 2-D slices alone. Its multi-clip-plane cutaway
+// (isClipPlanesCutaway) is the native building block that gets closest: up to 6
+// clip planes are ANDed together in the raycaster, and cutaway mode removes only
+// the one region where ALL of them agree, rather than the usual single-sided
+// clip. Three axis-aligned planes positioned at the crosshair therefore carve
+// away just the one octant nearest the crosshair, opening the render to reveal
+// the orthogonal cut surfaces while the rest of the volume stays fully rendered.
+let cutawayEnabled = false
+let cutawayInverted = false
+nvSlices.opts.isClipPlanesCutaway = true
+// NiiVue's own C/P clip-plane hotkeys are bound to the orthoslice canvas itself
+// (focused whenever it's clicked) and operate on a single freeform clip plane —
+// they know nothing about our crosshair-synced 3-plane cutaway and would fight
+// it (KeyP also collides with this app's Pivot@vertex shortcut). Blanked out
+// here in favor of our own 'c' shortcut below, driven off the checkbox.
+nvSlices.opts.clipPlaneHotKey = ''
+nvSlices.opts.cycleClipPlaneHotKey = ''
+// [azimuth, elevation] for axis-aligned planes — the same values NiiVue's own
+// clip-plane presets use for RIGHT / ANTERIOR / SUPERIOR (see CLIP_PLANE_PRESETS
+// in its source). depth is computed per-crosshair-position below.
+const CUTAWAY_AZI_ELEV = [[90, 0], [180, 0], [0, 90]]
+function updateCutawayClipPlanes() {
+  if (!cutawayEnabled || !nvSlices.volumes.length) return
+  const frac = nvSlices.scene.crosshairPos   // [x, y, z] in 0..1 volume-fraction space
+  const depthAziElevs = CUTAWAY_AZI_ELEV.map(([azimuth, elevation]) => {
+    // Same sph2cartDeg NiiVue itself uses to turn azimuth/elevation into a clip
+    // normal, so depth = normal · (crosshair - center) lands the plane exactly
+    // on the crosshair without having to hand-derive the axis/sign convention.
+    const n = niivue.NVUtilities.sph2cartDeg(azimuth, elevation)
+    const depth = n[0] * (frac[0] - 0.5) + n[1] * (frac[1] - 0.5) + n[2] * (frac[2] - 0.5)
+    if (!cutawayInverted) return [depth, azimuth, elevation]
+    // Invert = remove the opposite octant instead. Negating the clip normal
+    // flips which side of each plane is cut away; for this azimuth/elevation
+    // convention that's azimuth+180/elevation negated (the spherical antipode),
+    // and the plane stays anchored at the same crosshair position by also
+    // negating depth (verified algebraically against NiiVue's sph2cartDeg, not
+    // just assumed — sph2cartDeg(azi+180, -elev) === -sph2cartDeg(azi, elev)).
+    return [-depth, (azimuth + 180) % 360, -elevation]
+  })
+  nvSlices.setClipPlanes(depthAziElevs)
+}
+function disableCutawayClipPlanes() {
+  nvSlices.setClipPlanes([[2, 0, 0], [2, 0, 0], [2, 0, 0]])   // depth=2 is NiiVue's "off" sentinel
+}
+document.getElementById('cutaway3DChk').addEventListener('change', function() {
+  cutawayEnabled = this.checked
+  if (cutawayEnabled) updateCutawayClipPlanes()
+  else disableCutawayClipPlanes()
+})
+document.getElementById('cutawayInvertChk').addEventListener('change', function() {
+  cutawayInverted = this.checked
+  updateCutawayClipPlanes()   // no-op if cutaway isn't currently enabled
+})
 nvSlices.setSliceType(nvSlices.sliceTypeMultiplanar)
 nvSlices.setRadiologicalConvention(true)
 nvSlices.setCrosshairColor(ACCENT_YELLOW_RGBA)   // match selected-vertex color
 nvSlices.setCrosshairWidth(0.5)                   // thinner than the default 1px
+// Right-drag brightness/contrast: NiiVue's default right-button gesture
+// (DRAG_MODE.contrast) draws a box and auto-windows to that box's intensity
+// range — unlike the up/down=brightness, left/right=contrast drag every other
+// neuroimaging viewer uses. DRAG_MODE.windowing is that familiar gesture
+// (vertical = level/brightness, horizontal = window width/contrast); only
+// rightButton is overridden here, so left-click crosshair placement and the
+// scroll-to-zoom/pan bindings elsewhere are untouched. onIntensityChange
+// (wired below to syncVolClipInputs) fires for this drag mode too, so the
+// clip-min/max sidebar inputs stay in sync automatically.
+nvSlices.setMouseEventConfig({ rightButton: niivue.DRAG_MODE.windowing })
+// windowingGainFactor scales pixels-dragged -> intensity-units-changed (no
+// dedicated setter; NiiVue reads opts.windowingGainFactor fresh on every drag
+// move). Default is 2 (fast); dialed down here since a full-canvas drag was
+// blowing past the intensity range almost immediately. Raise/lower to taste.
+nvSlices.opts.windowingGainFactor = 0.4
+
+// ── orthoslice volume selector ────────────────────────────────────────────────
+// The dropdown chooses which volume the orthoslices show. It starts with just
+// the discovered brain volume (already loaded above, served by URL) plus a
+// trailing "other…" entry that opens the browser's file picker; each picked file
+// is appended so volumes can be switched back and forth.
+//
+// To keep switching instant, every chosen volume is decoded + uploaded to the
+// GPU exactly once and then kept RESIDENT in nvSlices.volumes. Switching just
+// reorders the chosen volume to the background (index 0) and zeroes the others'
+// opacity — no re-fetch, no re-decode, no re-upload. The world-space crosshair
+// is preserved across the switch.
+const volSel  = document.getElementById('volSel')
+const volFile = document.getElementById('volFile')
+// option value -> { name, url?|file?, blobUrl?, image?(NVImage), defCalMin?, defCalMax? }
+const volumeRegistry = {}
+let currentVolKey = null
+let volSeq = 0
+let orthoCmap = 'bone'   // colormap applied to whichever volume the orthoslices show
+
+function addVolumeOption(desc, select) {
+  const key = 'vol' + (volSeq++)
+  volumeRegistry[key] = desc
+  const opt = document.createElement('option')
+  opt.value = key
+  opt.textContent = desc.name
+  volSel.insertBefore(opt, volSel.querySelector('option[value="__other__"]'))
+  if (select) volSel.value = key
+  return key
+}
+
+async function showVolume(key) {
+  const desc = volumeRegistry[key]
+  if (!desc) return
+  if (key === currentVolKey && desc.image) return   // already displayed — nothing to do
+
+  // Preserve the current crosshair in world mm (captured against the OLD
+  // background) so the switch keeps the anatomical focus point.
+  let mm = null
+  if (nvSlices.volumes.length && typeof nvSlices.frac2mm === 'function') {
+    try { mm = nvSlices.frac2mm([...nvSlices.scene.crosshairPos]) } catch (e) {}
+  }
+
+  // First selection of this volume: decode + upload once, then keep it resident
+  // so re-selecting it later skips the expensive decode (the GL recomposite in
+  // setVolume() below is unavoidable per switch, but the decode is not).
+  if (!desc.image) {
+    const item = { colormap: orthoCmap, opacity: 1 }
+    if (desc.url) {
+      item.url = desc.url
+    } else if (desc.file) {
+      if (!desc.blobUrl) desc.blobUrl = URL.createObjectURL(desc.file)
+      item.url  = desc.blobUrl
+      item.name = desc.file.name       // blob URLs carry no extension; let NiiVue infer the format
+    }
+    try {
+      await nvSlices.addVolumeFromUrl(item)   // add without dropping the resident volumes
+    } catch (e) {
+      console.warn('[volume] failed to load', desc.name, e)
+      alert('Could not load volume: ' + desc.name)
+      return
+    }
+    desc.image     = nvSlices.volumes[nvSlices.volumes.length - 1]
+    desc.defCalMin = desc.image.cal_min      // per-volume default window for the 'r' reset
+    desc.defCalMax = desc.image.cal_max
+  }
+
+  // Bring the chosen volume to the background (index 0) and hide the rest. Use
+  // NiiVue's official setVolume(): it updates the internal background reference
+  // and frac<->vox transforms. Reordering nvSlices.volumes by hand does NOT, so
+  // the next click crashed in convertFrac2Vox. setVolume() rebuilds the GL
+  // texture itself, so there is no separate updateGLVolume() call.
+  desc.image.colormap = orthoCmap                   // colormap follows the shown volume
+  // Show only the chosen volume's pixels AND its colorbar; resident volumes keep
+  // their own colormap but their colorbars stay hidden so they don't pile up.
+  for (const v of nvSlices.volumes) {
+    const shown = (v === desc.image)
+    v.opacity = shown ? 1 : 0
+    v.colorbarVisible = shown
+  }
+  if (nvSlices.volumes[0] !== desc.image) nvSlices.setVolume(desc.image, 0)
+  else nvSlices.updateGLVolume()
+
+  currentVolKey = key
+  volSel.value = key
+  defaultVolCalMin = desc.defCalMin
+  defaultVolCalMax = desc.defCalMax
+  nvSlices.setCrosshairColor(ACCENT_YELLOW_RGBA)    // re-assert crosshair styling
+  nvSlices.setCrosshairWidth(0.5)
+  if (mm && typeof nvSlices.mm2frac === 'function') {
+    const frac = nvSlices.mm2frac([mm[0], mm[1], mm[2]])
+    if (frac) nvSlices.scene.crosshairPos = [...frac]
+  }
+  // Refresh the position readout so its value line reflects the new volume.
+  if (typeof nvSlices.createOnLocationChange === 'function') nvSlices.createOnLocationChange()
+  nvSlices.drawScene()
+  syncVolClipInputs()          // reflect the shown volume's color range in the clip boxes
+}
+
+// Seed the dropdown: the already-loaded brain volume (if any), then "other…".
+// Its NVImage is already resident (from the startup loadVolumes), so link it
+// directly rather than re-adding it.
+if (VOL_URL) {
+  const initName = VOLUMES[0].name || decodeURIComponent(VOL_URL.split('?')[0].split('/').pop())
+  const img = nvSlices.volumes[0] || null
+  currentVolKey = addVolumeOption({
+    name: initName, url: VOL_URL, image: img,
+    defCalMin: img ? img.cal_min : null, defCalMax: img ? img.cal_max : null,
+  }, true)
+}
+{
+  const other = document.createElement('option')
+  other.value = '__other__'
+  other.textContent = 'other…'
+  volSel.appendChild(other)
+}
+
+volSel.addEventListener('change', () => {
+  if (volSel.value === '__other__') {
+    volSel.value = currentVolKey ?? ''   // revert; the real switch commits once a file is picked
+    volFile.click()
+    return
+  }
+  showVolume(volSel.value)
+})
+
+volFile.addEventListener('change', () => {
+  const file = volFile.files && volFile.files[0]
+  volFile.value = ''                     // reset so the same file can be re-picked later
+  if (!file) return
+  showVolume(addVolumeOption({ name: file.name, file }, true))
+})
+
+// ── orthoslice colormap selector ──────────────────────────────────────────────
+// Options come straight from NiiVue's own colormap list, so every entry is valid.
+// The choice is orthoslice-wide: it applies to the current background volume and
+// is re-applied by showVolume() when you switch volumes.
+const volCmapSel = document.getElementById('volCmapSel')
+fillCmapSelect(volCmapSel, orthoCmap)   // same curated list as the surface overlays
+volCmapSel.addEventListener('change', () => {
+  orthoCmap = volCmapSel.value
+  const bg = nvSlices.volumes[0]
+  if (bg) { bg.colormap = orthoCmap; nvSlices.updateGLVolume(); nvSlices.drawScene() }
+})
+
+// ── orthoslice color clip (cal_min / cal_max) ─────────────────────────────────
+// Clip the intensity range mapped through the colormap on the orthoslice
+// background volume; the built-in colorbar reflects the range automatically.
+const volClipMin = document.getElementById('volClipMin')
+const volClipMax = document.getElementById('volClipMax')
+function syncVolClipInputs() {
+  const bg = nvSlices.volumes[0]
+  if (!bg) return
+  volClipMin.value = (+bg.cal_min).toPrecision(4)
+  volClipMax.value = (+bg.cal_max).toPrecision(4)
+}
+function applyVolClip() {
+  const bg = nvSlices.volumes[0]
+  if (!bg) return
+  const mn = parseFloat(volClipMin.value), mx = parseFloat(volClipMax.value)
+  if (!isFinite(mn) || !isFinite(mx) || mx <= mn) { syncVolClipInputs(); return }  // ignore invalid, restore
+  bg.cal_min = mn; bg.cal_max = mx
+  nvSlices.updateGLVolume(); nvSlices.drawScene()
+}
+volClipMin.addEventListener('change', applyVolClip)
+volClipMax.addEventListener('change', applyVolClip)
+document.getElementById('volClipAuto').addEventListener('click', () => {
+  const bg = nvSlices.volumes[0], desc = volumeRegistry[currentVolKey]
+  if (!bg || !desc || desc.defCalMin == null) return
+  bg.cal_min = desc.defCalMin; bg.cal_max = desc.defCalMax   // the volume's default (auto) window
+  nvSlices.updateGLVolume(); nvSlices.drawScene()
+  syncVolClipInputs()
+})
+syncVolClipInputs()          // initial fill from the startup volume
+
+// Right-click-drag window/level changes cal_min/cal_max inside NiiVue (the
+// colorbar updates immediately); mirror that same range into the clip boxes.
+// NiiVue invokes the *instance* callback this.onIntensityChange(volume), not
+// opts.onIntensityChange, so it must be assigned on the instance to fire.
+nvSlices.onIntensityChange = () => syncVolClipInputs()
 
 // ── depth control ─────────────────────────────────────────────────────────────
 function setDepth(d) {
@@ -622,6 +1146,7 @@ function setDepth(d) {
   for (const nv of [nvLhL, nvRhL, nvAsym])
     for (const mesh of nv.meshes)
       if (mesh.layers?.length) nv.setMeshLayerProperty(mesh.id, 0, 'frame4D', d)
+  broadcastDwiCrosshair()
   updateDepthMarker(mm)
 }
 
@@ -699,32 +1224,23 @@ function setLayerOpacity(op) {
 }
 
 // ── colorbars ─────────────────────────────────────────────────────────────────
-const CMAP_CSS = {
-  hot:       '#000 0%,#900 30%,#f00 55%,#ff0 80%,#fff 100%',
-  inferno:   '#000 0%,#3b0f70 20%,#8c2981 40%,#dd4968 60%,#fb9a06 80%,#fcffa4 100%',
-  plasma:    '#0d0887 0%,#6a00a8 25%,#b12a90 50%,#e16462 75%,#fca636 100%',
-  viridis:   '#440154 0%,#31688e 33%,#35b779 67%,#fde725 100%',
-  magma:     '#000 0%,#51127c 25%,#b73779 50%,#fd9567 75%,#fbfdbf 100%',
-  cividis:   '#00204c 0%,#4a5569 33%,#8a8e73 67%,#dde318 100%',
-  thermal:   '#042333 0%,#2c3f6a 25%,#7c4e80 50%,#d45e53 75%,#fde735 100%',
-  batlow:    '#011959 0%,#1c5769 25%,#4c8a67 50%,#c08253 75%,#fad7c0 100%',
-  cool:      '#0ff 0%,#f0f 100%',
-  warm:      '#6e40aa 0%,#ff5e63 50%,#aff05b 100%',
-  gray:      '#000 0%,#fff 100%',
-  bone:      '#000 0%,#556677 50%,#fff 100%',
-  copper:    '#000 0%,#c87941 50%,#ffb07a 100%',
-  jet:       '#00f 0%,#0ff 25%,#0f0 50%,#ff0 75%,#f00 100%',
-  bwr:       '#00f 0%,#fff 50%,#f00 100%',
-  cwr:       '#0cc 0%,#fff 50%,#f00 100%',
-  gwr:       '#0b4 0%,#fff 50%,#f00 100%',
-  blue2red:  '#00f 0%,#0ff 25%,#0f0 50%,#ff0 75%,#f00 100%',
-  blue2magenta: '#00f 0%,#fff 50%,#f0f 100%',
-  hsv:       '#f00 0%,#ff0 17%,#0f0 33%,#0ff 50%,#00f 67%,#f0f 83%,#f00 100%',
-}
-
+// Build the gradient straight from NiiVue's interpolated colormap LUT so every
+// registered colormap (built-in or our custom diverging ones) renders correctly
+// and the bar always matches the surface. nvSlices.colormap(name, invert) returns
+// the full 256-entry RGBA table with inversion already applied, so no separate
+// per-colormap CSS table to keep in sync.
 function cmapCss(name, invert) {
-  const stops = CMAP_CSS[name] || '#333 0%,#ccc 100%'
-  return `linear-gradient(to ${invert ? 'left' : 'right'}, ${stops})`
+  let lut = null
+  try { lut = nvSlices.colormap ? nvSlices.colormap(name, !!invert) : null } catch (e) {}
+  if (lut && lut.length >= 8) {
+    const n = lut.length / 4, STEPS = 16, stops = []
+    for (let s = 0; s <= STEPS; s++) {
+      const idx = Math.round(s / STEPS * (n - 1)) * 4
+      stops.push(`rgb(${lut[idx]},${lut[idx+1]},${lut[idx+2]}) ${(s / STEPS * 100).toFixed(1)}%`)
+    }
+    return `linear-gradient(to right, ${stops.join(',')})`
+  }
+  return `linear-gradient(to ${invert ? 'left' : 'right'}, #333 0%, #ccc 100%)`
 }
 
 function refreshColorbars() {
@@ -816,6 +1332,103 @@ document.getElementById('contourPialChk').addEventListener('change', function() 
   toggleSliceContour('pial', this.checked)
 })
 
+// ── streamlines overlay on the orthoslices ────────────────────────────────────
+{
+  const btn = document.getElementById('loadStreamlinesBtn')
+  const visChk = document.getElementById('streamlineVisibleChk')
+  const modeSel = document.getElementById('streamlineModeSel')
+  const colorSel = document.getElementById('streamlineColorSel')
+  const colorPicker = document.getElementById('streamlineColorPicker')
+  if (!STREAMLINES.lh && !STREAMLINES.rh) {
+    btn.disabled = true
+    btn.title = 'No streamlines (.tck) found for this subject'
+    btn.style.opacity = 0.4
+    visChk.parentElement.style.opacity = 0.4
+    modeSel.parentElement.style.opacity = 0.4
+    colorSel.parentElement.style.opacity = 0.4
+  } else {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true
+      btn.textContent = 'Loading…'
+      try {
+        await ensureStreamlines()
+        btn.textContent = 'Streamlines loaded'
+        visChk.disabled = false
+        modeSel.disabled = false
+        colorSel.disabled = false
+        applyStreamlineSelection()   // start filtered to whatever vertex is already selected
+        applyStreamlineColor()
+      } catch (e) {
+        console.warn('[streamlines] failed to load', e)
+        alert('Could not load streamlines: ' + e.message)
+        btn.textContent = 'Load streamlines'
+        btn.disabled = false
+      }
+    })
+    visChk.addEventListener('change', function() {
+      streamlinesVisible = this.checked
+      applyStreamlineVisibility()
+    })
+    modeSel.addEventListener('change', applyStreamlineSelection)
+    colorSel.addEventListener('change', () => {
+      colorPicker.disabled = colorSel.value !== 'fixed'
+      applyStreamlineColor()
+    })
+    colorPicker.addEventListener('input', applyStreamlineColor)
+  }
+}
+
+// ── DWI-space companion tab ───────────────────────────────────────────────────
+// "Open DWI space" launches /dwi (FA map + DWI-space streamlines, no sidebar —
+// see make_dwi_html) in a second tab, then keeps its crosshair following this
+// tab's vertex/depth selection over BroadcastChannel. Mostly one-way (T1 tab →
+// DWI tab) and same-origin/same-browser only, so no server round-trip is
+// needed; the DWI tab does its own vertex→point lookup once it receives a
+// message (see placeCrosshairAtStreamlinePoint in _DWI_HTML — the DWI-space
+// streamlines are the literal warp target of the ones here, so a (vertex,
+// depth) pair indexes directly into that tab's own streamline points).
+const dwiChannel = ('BroadcastChannel' in window) ? new BroadcastChannel('cortical-browser-dwi-crosshair') : null
+// The one message that flows the other way: a freshly-opened DWI tab needs
+// several awaits (fetch its page, load NiiVue from the CDN, load the FA
+// volume and streamlines) before it's even listening. A broadcast fired right
+// after window.open() below routinely beats that — BroadcastChannel doesn't
+// queue messages for listeners that don't exist yet, so it's just lost. The
+// DWI tab announces "dwi-ready" once its own listener is actually live; this
+// re-sends the current selection in response, instead of guessing at timing.
+if (dwiChannel) {
+  dwiChannel.onmessage = ev => {
+    if (ev.data?.type === 'dwi-ready') broadcastDwiCrosshair()
+  }
+}
+let currentHemi = 'lh'   // hemisphere of the most recently selected vertex
+function broadcastDwiCrosshair() {
+  if (!dwiChannel || currentVertex === null) return
+  // vertex is the crosshair anchor (always a single point); vertices is the
+  // exact same selectedVertices array the main tab's own "Selected vertex"
+  // streamline filter uses, so the DWI tab's "Selected vertex" mode
+  // highlights the identical set — including a loaded vertex-ID list, if one
+  // is active. Read from the cache rather than recomputed, so what's
+  // broadcast can never drift from what selectVertex() actually applied.
+  dwiChannel.postMessage({
+    vertex: currentVertex, vertices: selectedVertices,
+    depth: currentDepth, hemi: currentHemi,
+  })
+}
+{
+  const btn = document.getElementById('openDwiBtn')
+  if (!DWI_AVAILABLE) {
+    btn.disabled = true
+    btn.title = 'No dwi/fa.nii.gz found for this subject'
+    btn.style.opacity = 0.4
+  } else {
+    btn.addEventListener('click', () => {
+      // Named target: repeat clicks focus the same tab instead of piling up new ones.
+      window.open('/dwi', 'dwiSpaceTab')
+      broadcastDwiCrosshair()   // in case that tab was already open and waiting
+    })
+  }
+}
+
 // ── shader selector ───────────────────────────────────────────────────────────
 document.getElementById('shaderSel').addEventListener('change', e => {
   currentShader = e.target.value; applyCurrentShader()
@@ -869,6 +1482,13 @@ document.getElementById('crosshairChk').addEventListener('change', function() {
   nvSlices.drawScene()
 })
 
+// Orthoslice interpolation: checked = smooth (linear), unchecked = nearest. Also
+// toggled by the "i" keyboard shortcut, which flips this checkbox. setInterpolation
+// takes isNearest, so pass the negation of "smooth", and it redraws itself.
+document.getElementById('interpChk').addEventListener('change', function() {
+  nvSlices.setInterpolation(!this.checked)
+})
+
 // ── metric selector ───────────────────────────────────────────────────────────
 document.getElementById('metricSel').addEventListener('change', async e => {
   currentMetric = e.target.value
@@ -896,6 +1516,7 @@ document.getElementById('metricSel').addEventListener('change', async e => {
       for (const i of [0, 1, 2, 3, 4, 5]) chart.data.datasets[i].data = []
       chart.update('none')
     }
+    clearMultivariate()
   }
 })
 
@@ -905,7 +1526,7 @@ refreshColorbars()
 
 // ── neighbor-ring expansion (mirrors getNeighborRings in cortical_browser_2.m) ─
 // Built lazily from the LH mesh topology and reused for RH/Asym since all three
-// share the same ico6_sym triangulation — only vertex coordinates differ.
+// share the same surface template triangulation — only vertex coordinates differ.
 let vertexAdjacency = null
 
 function buildAdjacency(tris, nVerts) {
@@ -942,6 +1563,54 @@ function neighborRings(v, rings) {
     frontier = next
   }
   return Array.from(visited)
+}
+
+// ── loaded vertex-ID list (supersedes interactive vertex/rings selection) ────
+// When a .txt file is loaded via "Load vertex IDs", this array replaces the
+// vertex set everywhere a selection currently feeds into (depth-profile
+// aggregation, multivariate stats, streamline "Selected vertex" mode, and the
+// DWI-space link) — see currentRingSet() below. Rings is bypassed entirely in
+// this mode: the set is exactly the loaded IDs, not further expanded.
+let loadedVertexIds = null
+
+// Returns the vertex set to aggregate over for vertIdx: the loaded list if one
+// is active, otherwise the normal neighbor-ring expansion. Pure/stateless —
+// selectVertex() below is the only place that calls this and caches the
+// result into selectedVertices.
+function currentRingSet(vertIdx) {
+  return loadedVertexIds || neighborRings(vertIdx, nRings)
+}
+
+// ── the current selection, exposed as one array regardless of how it was
+// made (a single click, click+Rings, or a loaded vertex-ID list) ─────────────
+// selectVertex() is the sole writer, right after it computes ringSet via
+// currentRingSet(). Everything that needs "what's selected right now" —
+// streamline filtering, the DWI-space broadcast, and the dump helpers below —
+// reads this instead of recomputing it, so there's exactly one place selection
+// state can get out of sync with what's actually on screen.
+let selectedVertices = []
+
+// Log the current selection to the browser devtools console. Also reachable
+// as window.dumpSelectedVertices() from the console directly.
+function dumpSelectedVertices() {
+  console.log(`[selection] ${selectedVertices.length} vertex ID(s):`, selectedVertices)
+  return selectedVertices
+}
+window.dumpSelectedVertices = dumpSelectedVertices
+
+// Download the current selection as a .txt file — one vertex ID per line,
+// the exact format "Load vertex IDs" reads back in, so a selection can be
+// round-tripped (export, edit externally, re-import) or archived.
+function downloadSelectedVertices() {
+  if (!selectedVertices.length) { alert('No vertex selected'); return }
+  const subj = document.querySelector('.subj')?.textContent || 'subject'
+  const blob = new Blob([selectedVertices.join('\n') + '\n'], { type: 'text/plain' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  a.href = url
+  a.download = `${subj}_vertex_selection.txt`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 // ── per-vertex surface area (mirrors FreeSurfer's ?h.area: each triangle's
@@ -982,15 +1651,25 @@ function ringArea(hemi, ringSet) {
   return sum
 }
 
+// Per-depth mean ± sd across vertices, ignoring NaN ("no data": invalid or
+// short-track depths). A depth with no valid samples yields NaN (→ a gap in
+// the chart); sd needs ≥2 valid samples at that depth, else NaN (no band).
 function meanStd(rows) {
   const n = rows.length, nd = rows[0].length
   const mean = new Array(nd).fill(0)
-  for (const row of rows) for (let d = 0; d < nd; d++) mean[d] += row[d]
-  for (let d = 0; d < nd; d++) mean[d] /= n
+  const cnt  = new Array(nd).fill(0)
+  for (const row of rows) for (let d = 0; d < nd; d++) {
+    const v = row[d]
+    if (Number.isFinite(v)) { mean[d] += v; cnt[d]++ }
+  }
+  for (let d = 0; d < nd; d++) mean[d] = cnt[d] ? mean[d] / cnt[d] : NaN
   if (n <= 1) return { mean, sd: null }
   const sd = new Array(nd).fill(0)
-  for (const row of rows) for (let d = 0; d < nd; d++) { const diff = row[d] - mean[d]; sd[d] += diff*diff }
-  for (let d = 0; d < nd; d++) sd[d] = Math.sqrt(sd[d] / (n - 1))
+  for (const row of rows) for (let d = 0; d < nd; d++) {
+    const v = row[d]
+    if (Number.isFinite(v)) { const diff = v - mean[d]; sd[d] += diff*diff }
+  }
+  for (let d = 0; d < nd; d++) sd[d] = cnt[d] > 1 ? Math.sqrt(sd[d] / (cnt[d] - 1)) : NaN
   return { mean, sd }
 }
 
@@ -1142,14 +1821,21 @@ async function selectVertex(vertIdx, nvInst) {
   const nVerts = mesh.pts.length / 3
   if (vertIdx < 0 || vertIdx >= nVerts) return
 
-  // Snap orthoslice crosshairs to vertex world position
+  // Snap orthoslice crosshairs to vertex world position. Setting crosshairPos
+  // directly doesn't fire onLocationChange (only user slice interaction does),
+  // so call createOnLocationChange() to refresh the position readout.
   const vx=mesh.pts[vertIdx*3], vy=mesh.pts[vertIdx*3+1], vz=mesh.pts[vertIdx*3+2]
   if (nvSlices.volumes.length && typeof nvSlices.mm2frac === 'function') {
     const frac = nvSlices.mm2frac([vx, vy, vz])
-    if (frac) { nvSlices.scene.crosshairPos=[...frac]; nvSlices.drawScene() }
+    if (frac) {
+      nvSlices.scene.crosshairPos = [...frac]
+      if (typeof nvSlices.createOnLocationChange === 'function') nvSlices.createOnLocationChange()
+      nvSlices.drawScene()
+    }
   }
 
-  const ringSet     = neighborRings(vertIdx, nRings)
+  selectedVertices  = currentRingSet(vertIdx)
+  const ringSet     = selectedVertices
   const neighborIdx = ringSet.filter(v => v !== vertIdx)
 
   // Drop a marker sphere on this vertex (plus smaller white spheres on its
@@ -1180,6 +1866,9 @@ async function selectVertex(vertIdx, nvInst) {
   }
 
   currentVertex = vertIdx
+  applyStreamlineSelection()   // respects the mode selector; no-op if streamlines haven't been loaded yet
+  currentHemi = (nvInst === nvRhL) ? 'rh' : 'lh'   // nvAsym shares LH geometry, counts as 'lh'
+  broadcastDwiCrosshair()
 
   // Read depth profiles from binary matrices, averaged over the neighbor-ring set
   const info = METRICS[currentMetric]
@@ -1210,10 +1899,16 @@ async function selectVertex(vertIdx, nvInst) {
   setProfiles(meanStd(rowsOf(lhMat)), meanStd(rowsOf(rhMat)), meanStd(rowsOf(asymMat)), ringSet.length, lhArea, rhArea, normStat)
   document.getElementById('vtx-display').textContent = `${vx.toFixed(1)}, ${vy.toFixed(1)}, ${vz.toFixed(1)} mm`
   document.getElementById('vtxInput').value = vertIdx
+
+  // Multivariate panels fetch independently so the profiles above render
+  // immediately rather than waiting on the server-side Mahalanobis compute.
+  // They aggregate over the same neighbor-ring set as the univariate charts.
+  updateMultivariate(vertIdx, ringSet)
 }
 
 async function pickOnSurface(canvas, mouseX, mouseY, nvInst) {
   if (!currentMetric) return
+  if (loadedVertexIds) return   // a loaded vertex-ID list supersedes interactive picking
   const mesh = nvInst.meshes[0]
   if (!mesh?.pts || !mesh?.tris) return
 
@@ -1265,6 +1960,7 @@ setupSurfaceZoom('gl-asym', nvAsym)
 // ── vertex ID text entry ──────────────────────────────────────────────────────
 document.getElementById('vtxInput').addEventListener('keydown', e => {
   if (e.key !== 'Enter') return
+  if (loadedVertexIds) return   // superseded by the loaded vertex-ID list; input is also disabled
   const id = parseInt(e.target.value, 10)
   if (!Number.isNaN(id)) selectVertex(id, nvLhL)
 })
@@ -1276,6 +1972,71 @@ document.getElementById('ringsInput').addEventListener('change', e => {
   nRings = r
   if (currentVertex !== null) selectVertex(currentVertex, nvLhL)
 })
+
+// ── loaded vertex-ID list ─────────────────────────────────────────────────────
+// A plain .txt file, one non-negative integer vertex index per line. Once
+// loaded it supersedes interactive selection everywhere (see currentRingSet
+// above, and the pickOnSurface/vtxInput guards): the loaded list itself is
+// the vertex set used for aggregation, Rings is bypassed, and the first ID
+// in the file becomes the anchor vertex for the crosshair/markers/DWI link,
+// same role currentVertex normally plays for a single interactive pick.
+{
+  const loadBtn   = document.getElementById('loadVertexIdsBtn')
+  const saveBtn   = document.getElementById('saveVertexIdsBtn')
+  const unloadBtn = document.getElementById('unloadVertexIdsBtn')
+  const fileInput = document.getElementById('vertexIdsFile')
+  const statusEl  = document.getElementById('vertexIdsStatus')
+  const vtxInput  = document.getElementById('vtxInput')
+  const ringsInputEl = document.getElementById('ringsInput')
+
+  saveBtn.addEventListener('click', downloadSelectedVertices)
+
+  function setLoadedUiState(loaded) {
+    unloadBtn.disabled = !loaded
+    vtxInput.disabled = loaded
+    ringsInputEl.disabled = loaded
+  }
+
+  loadBtn.addEventListener('click', () => fileInput.click())
+
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files && fileInput.files[0]
+    fileInput.value = ''   // reset so the same file can be re-picked later
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = async () => {
+      const lines = String(reader.result).split(/\r?\n/).map(s => s.trim()).filter(s => s.length)
+      const ids = lines.map(Number)
+      if (!ids.length || ids.some(n => !Number.isInteger(n) || n < 0)) {
+        alert(`Could not parse ${file.name}: expected one non-negative integer vertex index per line`)
+        return
+      }
+      const nVerts = nvLhL.meshes[0]?.pts.length / 3
+      const inRange = Number.isFinite(nVerts) ? ids.filter(n => n < nVerts) : ids
+      if (!inRange.length) {
+        alert(`${file.name}: no vertex ID is within range for this surface (0-${nVerts - 1})`)
+        return
+      }
+      if (inRange.length < ids.length) {
+        console.warn(`[vertex IDs] dropped ${ids.length - inRange.length} out-of-range ID(s) from ${file.name}`)
+      }
+      loadedVertexIds = inRange
+      setLoadedUiState(true)
+      const dropped = ids.length - inRange.length
+      statusEl.textContent = `${inRange.length} vertex ID${inRange.length === 1 ? '' : 's'} loaded from ${file.name}`
+        + (dropped ? ` (${dropped} out of range, dropped)` : '')
+      await selectVertex(inRange[0], nvLhL)
+    }
+    reader.onerror = () => alert(`Could not read ${file.name}`)
+    reader.readAsText(file)
+  })
+
+  unloadBtn.addEventListener('click', () => {
+    loadedVertexIds = null
+    setLoadedUiState(false)
+    statusEl.textContent = ''
+  })
+}
 
 // ── pivot@vertex toggle + reset 3D orbit pivot back to the whole-brain center ─
 document.getElementById('pivotAtVertexChk').addEventListener('change', function() {
@@ -1315,6 +2076,27 @@ document.getElementById('showNormativeChk').addEventListener('change', async fun
   }
 }
 
+// ── multivariate panel limits (radar/bar |z| and Mahalanobis depth) ──────────
+document.getElementById('mvZlimInput').addEventListener('change', function() {
+  const v = parseFloat(this.value)
+  if (!isFinite(v) || v <= 0) { this.value = mvZlim; return }
+  mvZlim = v
+  if (mvCurrent) renderRadarBar(mvCurrent, currentDepth)
+})
+document.getElementById('mvMahalInput').addEventListener('change', function() {
+  const v = parseFloat(this.value)
+  if (!isFinite(v) || v <= 0) { this.value = mvMahalLim; return }
+  mvMahalLim = v
+  if (mvCurrent) renderMahalChart(mvCurrent)
+})
+if (!MV_AVAILABLE) {
+  for (const id of ['mvZlimInput','mvMahalInput']) {
+    const el = document.getElementById(id)
+    el.disabled = true
+    el.parentElement.style.opacity = 0.4
+  }
+}
+
 // ── orthoslice zoom (Ctrl + scroll) ──────────────────────────────────────────
 let sliceZoom = 1
 document.getElementById('gl-slices').addEventListener('wheel', e => {
@@ -1332,6 +2114,7 @@ function resetSliceView() {
     nvSlices.volumes[0].cal_min = defaultVolCalMin
     nvSlices.volumes[0].cal_max = defaultVolCalMax
     nvSlices.updateGLVolume()
+    syncVolClipInputs()
   }
   nvSlices.drawScene()
 }
@@ -1359,6 +2142,13 @@ function stepRings(delta) {
   const el = document.getElementById('ringsInput')
   el.value = Math.max(0, (parseInt(el.value, 10) || 0) + delta)
   el.dispatchEvent(new Event('change'))
+}
+
+// Show the nth loaded orthoslice volume (1-based), in dropdown order; no-op if
+// there's no volume at that position.
+function showVolumeByIndex(n) {
+  const opts = [...volSel.options].filter(o => o.value !== '__other__')
+  if (opts[n - 1]) showVolume(opts[n - 1].value)
 }
 
 // Global handler; ignores keys typed into form fields so vertex/number inputs
@@ -1392,6 +2182,20 @@ document.addEventListener('keydown', e => {
       e.preventDefault()
       break
     }
+    case 'i': {   // toggle orthoslice smooth/nearest interpolation via its checkbox
+      const chk = document.getElementById('interpChk')
+      chk.checked = !chk.checked
+      chk.dispatchEvent(new Event('change'))
+      e.preventDefault()
+      break
+    }
+    case 'c': {   // toggle the 3-D cutaway via its checkbox so the UI stays in sync
+      const chk = document.getElementById('cutaway3DChk')
+      chk.checked = !chk.checked
+      chk.dispatchEvent(new Event('change'))
+      e.preventDefault()
+      break
+    }
     // Orthoslice navigation: arrows/PgUp/PgDn step through the three planes.
     case 'arrowup':    stepCrosshair(0, 0,  1); e.preventDefault(); break  // axial → superior
     case 'arrowdown':  stepCrosshair(0, 0, -1); e.preventDefault(); break  // axial → inferior
@@ -1405,6 +2209,12 @@ document.addEventListener('keydown', e => {
     case 'home':       stepDepth( 1); e.preventDefault(); break
     case '-':
     case 'end':        stepDepth(-1); e.preventDefault(); break
+    // Orthoslice volume: 1-9 pick the nth loaded volume (dropdown order),
+    // 0 opens the "other…" file picker.
+    case '1': case '2': case '3': case '4': case '5':
+    case '6': case '7': case '8': case '9':
+      showVolumeByIndex(+e.key); e.preventDefault(); break
+    case '0':          volFile.click(); e.preventDefault(); break
   }
 })
 
@@ -1443,7 +2253,7 @@ function makeChart(id, color, label, fill = false) {
       responsive: true, maintainAspectRatio: false, animation: false,
       onClick: (evt, elements, chart) => setDepthFromChart(chart, evt.x),
       plugins: {
-        legend: { display: true, labels: { color: '#dddddd', boxWidth: 10, font: {size:10},
+        legend: { display: true, labels: { color: PLOT_TEXT, boxWidth: 10, font: {size:10},
           filter: (item, data) => !data.datasets[item.datasetIndex]?._isSd } },
         annotation: { annotations: { depthLine: {
           type: 'line', xMin: 0, xMax: 0,
@@ -1452,10 +2262,10 @@ function makeChart(id, color, label, fill = false) {
       },
       scales: {
         x: { type:'linear',
-             title: { display:true, text:'Depth (mm)', color:'#dddddd' },
-             ticks: { color:'#dddddd', maxTicksLimit:8, callback: v => v.toFixed(1) },
+             title: { display:true, text:'Depth (mm)', color:PLOT_TEXT },
+             ticks: { color:PLOT_TEXT, maxTicksLimit:8, callback: v => v.toFixed(1) },
              grid:  { color:'#303030' } },
-        y: { ticks: { color:'#dddddd', maxTicksLimit:5 }, grid: { color:'#303030' } }
+        y: { ticks: { color:PLOT_TEXT, maxTicksLimit:5 }, grid: { color:'#303030' } }
       }
     }
   })
@@ -1476,18 +2286,248 @@ chartRH   = makeChart('chart-rh',   RH_COLOR, 'RH')
 chartAsym = makeChart('chart-asym', '#8af5a6', 'Asymmetry', true)
 applyAsymYLimits()
 
+// ── multivariate explorer charts (row 4) ─────────────────────────────────────
+const mvTick = { color:PLOT_TEXT, font:{size:10} }
+const mvGrid = { color:'#303030' }
+
+// Mahalanobis distance vs depth — a mean line per hemisphere with a dashed
+// ±SD band (mirroring the univariate profile charts; the band is only
+// populated when >1 vertex is selected), plus the shared yellow depth
+// reference line. Clicking sets the depth, like the profile charts.
+const mvSdBand = color => ([
+  { data:[], borderColor:color, borderDash:[5,4], borderWidth:1,
+    pointRadius:0, tension:0.3, fill:false, parsing:false, spanGaps:false, _isSd:true },
+  { data:[], borderColor:color, borderDash:[5,4], borderWidth:1,
+    pointRadius:0, tension:0.3, fill:false, parsing:false, spanGaps:false, _isSd:true },
+])
+chartMahal = new Chart(document.getElementById('chart-mahal'), {
+  type: 'line',
+  data: { datasets: [
+    { label:'LH', data:[], borderColor:LH_COLOR, backgroundColor:LH_COLOR+'28',
+      pointRadius:2, tension:0.3, fill:false, parsing:false, spanGaps:false },
+    ...mvSdBand(LH_COLOR),
+    { label:'RH', data:[], borderColor:RH_COLOR, backgroundColor:RH_COLOR+'28',
+      pointRadius:2, tension:0.3, fill:false, parsing:false, spanGaps:false },
+    ...mvSdBand(RH_COLOR),
+  ]},
+  options: {
+    responsive:true, maintainAspectRatio:false, animation:false,
+    onClick: (evt, els, chart) => setDepthFromChart(chart, evt.x),
+    plugins: {
+      legend: { display:true, labels:{ color:PLOT_TEXT, boxWidth:10, font:{size:10},
+        filter:(item,data) => !data.datasets[item.datasetIndex]?._isSd } },
+      annotation: { annotations: { depthLine: {
+        type:'line', xMin:0, xMax:0, borderColor:ACCENT_YELLOW, borderWidth:1.5, borderDash:[4,3]
+      }}}
+    },
+    scales: {
+      x: { type:'linear', title:{ display:true, text:'Depth (mm)', color:PLOT_TEXT },
+           ticks:{ ...mvTick, maxTicksLimit:8, callback:v => v.toFixed(1) }, grid:mvGrid },
+      y: { min:0, max:mvMahalLim, title:{ display:true, text:'Mahalanobis distance', color:PLOT_TEXT },
+           ticks:mvTick, grid:mvGrid }
+    }
+  }
+})
+
+// |z-score| radar — one polygon per hemisphere, one spoke per metric.
+// Mean |z| polygon plus dashed +SD/−SD polygons (hidden from the legend),
+// mirroring the band on the profile/Mahalanobis charts.
+const mvRadarSd = color => ([
+  { data:[], borderColor:color, backgroundColor:'transparent', borderDash:[4,3],
+    borderWidth:1, pointRadius:0, fill:false, _isSd:true },
+  { data:[], borderColor:color, backgroundColor:'transparent', borderDash:[4,3],
+    borderWidth:1, pointRadius:0, fill:false, _isSd:true },
+])
+chartRadar = new Chart(document.getElementById('chart-radar'), {
+  type: 'radar',
+  data: { labels: [], datasets: [
+    { label:'LH', data:[], borderColor:LH_COLOR, backgroundColor:LH_COLOR+'33', borderWidth:2, pointRadius:2 },
+    ...mvRadarSd(LH_COLOR),
+    { label:'RH', data:[], borderColor:RH_COLOR, backgroundColor:RH_COLOR+'33', borderWidth:2, pointRadius:2 },
+    ...mvRadarSd(RH_COLOR),
+  ]},
+  options: {
+    responsive:true, maintainAspectRatio:false, animation:false,
+    plugins: { legend: { display:true, labels:{ color:PLOT_TEXT, boxWidth:10, font:{size:10},
+      filter:(item,data) => !data.datasets[item.datasetIndex]?._isSd } } },
+    scales: { r: {
+      min:0, max:mvZlim,
+      ticks:{ color:PLOT_TEXT, backdropColor:'transparent', showLabelBackdrop:false, font:{size:8}, stepSize:1 },
+      grid:{ color:'#3a3a3a' }, angleLines:{ color:'#3a3a3a' }, pointLabels:{ color:PLOT_TEXT, font:{size:10} }
+    }}
+  }
+})
+
+// Across-vertex sd whiskers on each z-score bar (Chart.js has no native error
+// bars). Reads dataset._sd (signed-z sd per metric) and draws a horizontal
+// whisker with end caps, since the bars are horizontal (indexAxis:'y').
+const mvErrorBars = {
+  id: 'mvErrorBars',
+  afterDatasetsDraw(chart) {
+    const x = chart.scales.x, ctx = chart.ctx, ca = chart.chartArea
+    const clamp = px => Math.max(ca.left, Math.min(ca.right, px))
+    chart.data.datasets.forEach((ds, di) => {
+      const sd = ds._sd
+      const meta = chart.getDatasetMeta(di)
+      if (!sd || meta.hidden) return
+      ctx.save()
+      ctx.lineWidth = 1
+      meta.data.forEach((el, i) => {
+        const v = ds.data[i], s = sd[i]
+        if (v == null || s == null || !isFinite(s) || s <= 0) return
+        ctx.strokeStyle = hexToRgba(ds.borderColor || '#cccccc', zBarAlpha(v))
+        const y = el.y, cap = 3
+        const xp = clamp(x.getPixelForValue(v + s)), xm = clamp(x.getPixelForValue(v - s))
+        ctx.beginPath()
+        ctx.moveTo(xm, y);       ctx.lineTo(xp, y)
+        ctx.moveTo(xm, y - cap); ctx.lineTo(xm, y + cap)
+        ctx.moveTo(xp, y - cap); ctx.lineTo(xp, y + cap)
+        ctx.stroke()
+      })
+      ctx.restore()
+    })
+  }
+}
+// z-score horizontal bars — metrics on the y-axis, signed z on the x-axis.
+// Bar alpha ramps from 0.1 at z=0 to 1.0 at |z|=mvZlim, so bars near zero read
+// as faint and extreme deviations pop; it re-scales with the live |z| limit
+// since zBarAlpha closes over the mutable mvZlim rather than a copied value.
+const zBarAlpha = z => 0.1 + 0.9 * Math.min(Math.abs(z ?? 0), mvZlim) / mvZlim
+chartZBar = new Chart(document.getElementById('chart-zbar'), {
+  type: 'bar',
+  data: { labels: [], datasets: [
+    { label:'LH', data:[], backgroundColor:ctx => hexToRgba(LH_COLOR, zBarAlpha(ctx.raw)), borderColor:LH_COLOR, borderWidth:0 },
+    { label:'RH', data:[], backgroundColor:ctx => hexToRgba(RH_COLOR, zBarAlpha(ctx.raw)), borderColor:RH_COLOR, borderWidth:0 },
+  ]},
+  plugins: [mvErrorBars],
+  options: {
+    indexAxis:'y', responsive:true, maintainAspectRatio:false, animation:false,
+    plugins: {
+      legend: { display:true, labels:{ color:PLOT_TEXT, boxWidth:10, font:{size:10} } },
+      annotation: { annotations: { zeroLine: {
+        type:'line', xMin:0, xMax:0, borderColor:'#888888', borderWidth:1
+      }}}
+    },
+    scales: {
+      x: { min:-mvZlim, max:mvZlim, title:{ display:true, text:'Z-score', color:PLOT_TEXT },
+           ticks:mvTick, grid:mvGrid },
+      y: { ticks:{ color:PLOT_TEXT, font:{size:9} }, grid:{ display:false } }
+    }
+  }
+})
+
+// If there's no cohort data, flag the panels so they read as unavailable.
+if (!MV_AVAILABLE) {
+  for (const id of ['clabel-mahal','clabel-radar','clabel-zbar']) {
+    const el = document.getElementById(id)
+    el.textContent += ' — no cohort data'
+    el.parentElement.style.opacity = 0.5
+  }
+}
+
+const mvLabel = (base, n) => (n > 1 ? `${base} (n=${n})` : base)
+
+// Mahalanobis-by-depth: mean line per hemisphere plus dashed ±SD band across
+// the selected vertex + neighbor-ring set (the band appears only for n>1).
+function renderMahalChart(data) {
+  const toXY  = arr => arr.map((v,i) => ({ x: i*data.step_mm, y: (v == null ? null : v) }))
+  const band  = (mean, sd, sign) => mean.map((m,i) => ({
+    x: i*data.step_mm,
+    y: (m == null || !sd || sd[i] == null) ? null : m + sign*sd[i]
+  }))
+  const setHemi = (base, hemi, name) => {
+    chartMahal.data.datasets[base].data     = toXY(hemi.mahal)
+    chartMahal.data.datasets[base].label    = mvLabel(name, data.n_vertices)
+    chartMahal.data.datasets[base + 1].data = band(hemi.mahal, hemi.mahal_sd, +1)
+    chartMahal.data.datasets[base + 2].data = band(hemi.mahal, hemi.mahal_sd, -1)
+  }
+  setHemi(0, data.lh, 'LH')
+  setHemi(3, data.rh, 'RH')
+  chartMahal.options.scales.y.max = mvMahalLim
+  const ann = chartMahal.options.plugins.annotation.annotations.depthLine
+  ann.xMin = ann.xMax = currentDepth * STEP_MM
+  chartMahal.update('none')
+}
+
+// Radar (mean |z| ± SD across vertices) and horizontal bars (mean signed z ±
+// SD via whiskers) at one depth. Per-metric gaps (null) are left in place
+// rather than dropping the whole hemisphere, so partially-valid vertices show.
+function renderRadarBar(data, depth) {
+  const d = Math.max(0, Math.min(data.n_depths - 1, depth))
+  const at = (arr) => (arr && arr[d]) ? arr[d] : []
+
+  chartRadar.data.labels = data.metrics
+  const setRadar = (base, hemi) => {
+    const mean = at(hemi.absz), sd = at(hemi.absz_sd)
+    chartRadar.data.datasets[base].data     = mean
+    chartRadar.data.datasets[base].label    = mvLabel(base === 0 ? 'LH' : 'RH', data.n_vertices)
+    chartRadar.data.datasets[base + 1].data = mean.map((m,i) => (m == null || sd[i] == null) ? null : m + sd[i])
+    chartRadar.data.datasets[base + 2].data = mean.map((m,i) => (m == null || sd[i] == null) ? null : Math.max(0, m - sd[i]))
+  }
+  setRadar(0, data.lh)
+  setRadar(3, data.rh)
+  chartRadar.options.scales.r.max = mvZlim
+  chartRadar.update('none')
+
+  chartZBar.data.labels = data.metrics
+  chartZBar.data.datasets[0].data = at(data.lh.z)
+  chartZBar.data.datasets[1].data = at(data.rh.z)
+  chartZBar.data.datasets[0]._sd  = at(data.lh.z_sd)
+  chartZBar.data.datasets[1]._sd  = at(data.rh.z_sd)
+  chartZBar.data.datasets[0].label = mvLabel('LH', data.n_vertices)
+  chartZBar.data.datasets[1].label = mvLabel('RH', data.n_vertices)
+  chartZBar.options.scales.x.min = -mvZlim
+  chartZBar.options.scales.x.max =  mvZlim
+  chartZBar.update('none')
+}
+
+function clearMultivariate() {
+  mvCurrent = null
+  for (const ch of [chartMahal, chartRadar, chartZBar]) {
+    for (const ds of ch.data.datasets) { ds.data = []; ds._sd = null }
+    ch.update('none')
+  }
+}
+
+// Fetch (once per vertex + ring count) and render all three multivariate
+// panels. ringSet mirrors the neighbor-ring set used by the univariate charts,
+// so both sets of panels aggregate over exactly the same vertices.
+async function updateMultivariate(vertIdx, ringSet) {
+  if (!MV_AVAILABLE) return
+  const verts = (ringSet && ringSet.length) ? ringSet : [vertIdx]
+  const key = `${vertIdx}:${nRings}`
+  try {
+    let data = mvCache[key]
+    if (!data) {
+      const r = await fetch(`/mahal?vertex=${vertIdx}&vertices=${verts.join(',')}`)
+      if (!r.ok) return
+      data = await r.json()
+      mvCache[key] = data
+    }
+    mvCurrent = data
+    renderMahalChart(data)
+    renderRadarBar(data, currentDepth)
+  } catch (e) {
+    console.warn('[multivariate] fetch/render failed', e)
+  }
+}
+
 function updateDepthMarker(mm) {
   if (!chartLH) return
-  for (const chart of [chartLH, chartRH, chartAsym]) {
-    const ann = chart.options.plugins?.annotation?.annotations?.depthLine
+  for (const chart of [chartLH, chartRH, chartAsym, chartMahal]) {
+    const ann = chart?.options.plugins?.annotation?.annotations?.depthLine
     if (!ann) continue
     ann.xMin = mm; ann.xMax = mm
     chart.update('none')
   }
+  // The radar/bar panels show a single depth, so they move with the marker too.
+  if (mvCurrent) renderRadarBar(mvCurrent, currentDepth)
 }
 
 function setProfiles(lhStat, rhStat, asymStat, count, lhArea, rhArea, normStat) {
-  const toXY = vals => vals.map((v,i) => ({x: i*STEP_MM, y: v}))
+  // Non-finite (NaN "no data", or a band edge built from one) → null so the
+  // chart draws a gap at that depth rather than a spurious point.
+  const toXY = vals => vals.map((v,i) => ({x: i*STEP_MM, y: Number.isFinite(v) ? v : null}))
   const entries = [
     [chartLH,   lhStat,   lhArea,  normStat?.lh],
     [chartRH,   rhStat,   rhArea,  normStat?.rh],
@@ -1522,8 +2562,508 @@ function setProfiles(lhStat, rhStat, asymStat, count, lhArea, rhArea, normStat) 
   updateDepthMarker(currentDepth * STEP_MM)
 }
 
+// ── resizable rows + double-click maximize ───────────────────────────────────
+// NiiVue/Chart panels auto-resize to their cells (NiiVue via ResizeObserver,
+// Chart via responsive), so adjusting the grid tracks is all that's needed.
+{
+  const gridEl = document.getElementById('grid')
+  const gridRowFr = [1, 1, 1, 1]                       // content-row weights (fr)
+  const applyGridRows = () => {
+    for (let i = 0; i < 4; i++) gridEl.style.setProperty(`--gr${i+1}`, gridRowFr[i] + 'fr')
+  }
+  applyGridRows()
+
+  // Current rendered pixel height of content row n (1..4), read off a panel in it.
+  const rowPx = n => {
+    const el = gridEl.querySelector('.grow' + n)
+    return el ? el.getBoundingClientRect().height : 0
+  }
+
+  // Drag a gutter: repartition just the two rows it sits between, in fr units so
+  // the result still scales with the window afterwards.
+  for (const g of gridEl.querySelectorAll('.rgutter')) {
+    g.addEventListener('pointerdown', e => {
+      e.preventDefault()
+      const ai = +g.dataset.above - 1, bi = +g.dataset.below - 1
+      const aPx0 = rowPx(ai + 1), bPx0 = rowPx(bi + 1)
+      const pairPx = aPx0 + bPx0, pairFr = gridRowFr[ai] + gridRowFr[bi]
+      if (pairPx <= 0 || pairFr <= 0) return
+      const pxPerFr = pairPx / pairFr, startY = e.clientY, MIN = 40
+      g.setPointerCapture(e.pointerId)
+      const onMove = ev => {
+        const aPx = Math.max(MIN, Math.min(pairPx - MIN, aPx0 + (ev.clientY - startY)))
+        gridRowFr[ai] = aPx / pxPerFr
+        gridRowFr[bi] = (pairPx - aPx) / pxPerFr
+        applyGridRows()
+      }
+      const onUp = () => {
+        g.removeEventListener('pointermove', onMove)
+        g.removeEventListener('pointerup', onUp)
+        window.dispatchEvent(new Event('resize'))
+      }
+      g.addEventListener('pointermove', onMove)
+      g.addEventListener('pointerup', onUp)
+    })
+  }
+
+  // A corner button on each panel toggles maximize (fill the grid) / restore.
+  // A button — not a canvas gesture — so it never triggers NiiVue's click/
+  // double-click behavior (vertex pick, crosshair move, brightness reset).
+  const toggleMaximize = cell => {
+    const wasMax = cell.classList.contains('maxed')
+    gridEl.querySelectorAll('.cell.maxed').forEach(c => c.classList.remove('maxed'))
+    gridEl.classList.toggle('has-max', !wasMax)
+    if (!wasMax) cell.classList.add('maxed')
+    for (const b of gridEl.querySelectorAll('.maxbtn')) {
+      const maxed = b.parentElement.classList.contains('maxed')
+      b.textContent = maxed ? '⤡' : '⤢'
+      b.title = maxed ? 'Restore panel' : 'Maximize panel'
+    }
+    requestAnimationFrame(() => window.dispatchEvent(new Event('resize')))
+  }
+  for (const cell of gridEl.querySelectorAll('.cell')) {
+    const btn = document.createElement('button')
+    btn.className = 'maxbtn'; btn.type = 'button'
+    btn.textContent = '⤢'; btn.title = 'Maximize panel'
+    btn.addEventListener('click', e => { e.stopPropagation(); e.preventDefault(); toggleMaximize(cell) })
+    cell.appendChild(btn)
+  }
+}
+
 window._nvSurf  = [nvLhL, nvRhL, nvAsym]
 window._nvSlice = nvSlices
+</script>
+</body>
+</html>
+"""
+
+# ── DWI-space companion page ─────────────────────────────────────────────────
+# Opened in a second tab via the "Open DWI space" button. A single orthoslice
+# viewer of the FA map with the DWI-space streamlines overlaid — no sidebar,
+# since its only job is to mirror the main tab's crosshair. The two tabs share
+# nothing server-side; they sync purely client-side via BroadcastChannel (both
+# pages are same-origin, served by this same process).
+_DWI_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CORTICAL BROWSER | DWI space — __SUBJ_ID__</title>
+<style>
+:root { --accent-yellow: #F5C842; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #1f1f1f; color: #ccc;
+  font: 11px/1.4 -apple-system, "Segoe UI", Arial, sans-serif;
+  height: 100vh; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+#hdr {
+  flex-shrink: 0; padding: 6px 10px; background: #2b2b2b; border-bottom: 1px solid #444444;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
+}
+.apptitle { font-weight: bold; color: var(--accent-yellow); font-size: 12px; letter-spacing: 0.5px; }
+.space { color: #999; font-size: 10px; white-space: nowrap; }
+.subj { font-weight: bold; color: #f0f0f0; font-size: 12px; }
+button.cbtn {
+  background: #3a3a3a; color: #ddd; border: 1px solid #555555;
+  border-radius: 3px; padding: 2px 8px; font-size: 10px; cursor: pointer;
+}
+button.cbtn:hover { background: #484848; }
+button.cbtn:disabled { opacity: 0.4; cursor: default; }
+label { display: flex; align-items: center; gap: 4px; color: #999999; white-space: nowrap; }
+select {
+  background: #d9d9d9; color: #1a1a1a; border: 1px solid #4d4d4d;
+  border-radius: 3px; padding: 1px 3px; font-size: 10px;
+}
+input[type=number] {
+  background: #d9d9d9; color: #1a1a1a; border: 1px solid #4d4d4d;
+  border-radius: 3px; padding: 1px 4px; font-size: 10px; width: 64px;
+  -moz-appearance: textfield;
+}
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button { display: none; }
+#status { color: #999999; font-size: 11px; font-family: monospace; margin-left: auto; white-space: pre; }
+#canvas-wrap { flex: 1; min-height: 0; position: relative; }
+canvas { display: block; width: 100% !important; height: 100% !important; outline: none; }
+</style>
+</head>
+<body>
+<div id="hdr">
+  <span class="apptitle">CORTICAL BROWSER</span>
+  <span class="space">DWI space</span>
+  <span class="subj">__SUBJ_ID__</span>
+  <button class="cbtn" id="dwiStreamVisBtn" title="Show/hide the DWI-space streamlines">Streamlines: on</button>
+  <button class="cbtn" id="dwiStreamModeBtn" title="Toggle between every streamline and only the ones seeded from the selected vertex/rings">Mode: selected</button>
+  <label title="Volume shown in the orthoslices">Volume <select id="dwiVolSel"></select></label>
+  <input type="file" id="dwiVolFile" accept=".nii,.nii.gz,.gz,.mgz,.mgh,.hdr,.img" style="display:none">
+  <label title="Colormap for the shown volume">cmap <select id="dwiCmapSel"></select></label>
+  <label title="Shown volume's color min (clip)">min <input type="number" id="dwiClipMin" step="any"></label>
+  <label title="Shown volume's color max (clip)">max <input type="number" id="dwiClipMax" step="any"></label>
+  <span id="status">waiting for a vertex to be selected in the main tab…</span>
+</div>
+<div id="canvas-wrap"><canvas id="gl-dwi"></canvas></div>
+
+<script type="module">
+import * as niivue from "__NIIVUE_CDN__"
+
+const FA_URL      = "__FA_URL__"
+const STREAMLINES = __STREAMLINES_JSON__   // {lh: url, rh: url}
+const STEP_MM     = __STEP_MM__
+const ACCENT_YELLOW_RGBA = [0xF5/255, 0xC8/255, 0x42/255, 1]
+const statusEl = document.getElementById('status')
+
+const nv = new niivue.Niivue({
+  backColor: [0.04, 0.04, 0.04, 1], show3Dcrosshair: true,
+  meshThicknessOn2D: 2, multiplanarLayout: 'row',
+  isColorbar: true, showColorbarBorder: false,
+  multiplanarShowRender: niivue.SHOW_RENDER.NEVER,   // just the 3 orthogonal slices, no 3-D volume panel
+})
+await new Promise(r => requestAnimationFrame(r))
+await nv.attachTo('gl-dwi')
+
+let dwiCmap = 'lipari'   // colormap applied to whichever volume the orthoslices show; follows switches
+if (FA_URL) await nv.loadVolumes([{ url: FA_URL, colormap: dwiCmap, opacity: 1 }])
+nv.setSliceType(nv.sliceTypeMultiplanar)
+nv.setRadiologicalConvention(true)
+nv.setCrosshairColor(ACCENT_YELLOW_RGBA)
+nv.setCrosshairWidth(0.5)
+// Right-drag brightness/contrast — same gesture override as the main tab's
+// orthoslices: NiiVue's default right-button gesture draws a box and
+// auto-windows to it, instead of the up/down=level, left/right=width drag
+// every other neuroimaging viewer uses.
+nv.setMouseEventConfig({ rightButton: niivue.DRAG_MODE.windowing })
+// windowingGainFactor is intensity-units-per-pixel-dragged, NOT a fraction of
+// the volume's range — NiiVue adds pixelsDragged*gainFactor straight onto
+// cal_min/cal_max in the volume's own native units (global_min/global_max
+// only clamp the result afterward, they don't scale the gain). So copying the
+// main tab's flat 0.4 here is wrong: brain.nii.gz is FreeSurfer-normalized to
+// roughly 0-255, but FA is bounded to roughly 0-1 by definition — the same
+// absolute 0.4/pixel blows past FA's entire range in ~2 pixels of drag.
+// Scale by this volume's own reported range instead, calibrated to the same
+// 0.4-per-~255-range rate the main tab uses, so the two tabs feel the same
+// regardless of what units the loaded volume happens to be in. Recalculated
+// on every volume switch (see showVolume below) since a newly-loaded volume
+// can have a completely different range.
+function calibrateWindowingGain() {
+  const bg = nv.volumes[0]
+  if (!bg) return
+  const RANGE_FRACTION_PER_PIXEL = 0.4 / 255   // main tab's calibration, as a fraction of range
+  const range = (bg.global_max ?? 1) - (bg.global_min ?? 0)
+  nv.opts.windowingGainFactor = RANGE_FRACTION_PER_PIXEL * range
+}
+calibrateWindowingGain()
+
+// ── colormap + color-clip controls, kept in sync with the built-in colorbar ──
+// Same pattern as the main tab's volCmapSel/volClipMin/volClipMax: NiiVue's
+// own colorbar (isColorbar above) redraws itself from cal_min/cal_max/colormap,
+// so these controls just read/write those three fields and it follows along.
+// Declared at top level (not nested in an if-block) so showVolume() below can
+// call them too — a function declared inside a block is block-scoped in a
+// module, invisible outside it.
+const cmapSel = document.getElementById('dwiCmapSel')
+const clipMin = document.getElementById('dwiClipMin')
+const clipMax = document.getElementById('dwiClipMax')
+function syncClipInputs() {
+  const bg = nv.volumes[0]
+  if (!bg) return
+  clipMin.value = (+bg.cal_min).toPrecision(4)
+  clipMax.value = (+bg.cal_max).toPrecision(4)
+}
+function applyClip() {
+  const bg = nv.volumes[0]
+  if (!bg) return
+  const mn = parseFloat(clipMin.value), mx = parseFloat(clipMax.value)
+  if (!isFinite(mn) || !isFinite(mx) || mx <= mn) { syncClipInputs(); return }   // ignore invalid, restore
+  bg.cal_min = mn; bg.cal_max = mx
+  nv.updateGLVolume(); nv.drawScene()
+}
+clipMin.addEventListener('change', applyClip)
+clipMax.addEventListener('change', applyClip)
+if (nv.volumes.length) {
+  const cmaps = (nv.colormaps ? nv.colormaps() : ['gray']).filter(n => !/^ct[-_]/i.test(n)).sort()
+  cmapSel.innerHTML = cmaps.map(n =>
+    `<option value="${n}"${n === dwiCmap ? ' selected' : ''}>${n}</option>`).join('')
+  cmapSel.addEventListener('change', () => {
+    dwiCmap = cmapSel.value
+    const bg = nv.volumes[0]
+    if (bg) { bg.colormap = dwiCmap; nv.updateGLVolume(); nv.drawScene() }
+  })
+  syncClipInputs()
+  // Right-drag windowing changes cal_min/cal_max inside NiiVue directly (the
+  // colorbar updates itself); mirror that range into the boxes too, same as
+  // the main tab's nvSlices.onIntensityChange -> syncVolClipInputs.
+  nv.onIntensityChange = () => syncClipInputs()
+} else {
+  cmapSel.disabled = true
+  clipMin.disabled = true
+  clipMax.disabled = true
+}
+
+// ── orthoslice volume selector ────────────────────────────────────────────
+// Same registry pattern as the main tab's volSel/volFile/showVolume: each
+// option is decoded+uploaded once on first selection, then kept resident (as
+// a hidden, zero-opacity volume) so switching back to it later is instant.
+const volSel  = document.getElementById('dwiVolSel')
+const volFile = document.getElementById('dwiVolFile')
+const volumeRegistry = {}   // key -> { name, url?|file?, blobUrl?, image?(NVImage) }
+let currentVolKey = null
+let volSeq = 0
+
+function addVolumeOption(desc, select) {
+  const key = 'vol' + (volSeq++)
+  volumeRegistry[key] = desc
+  const opt = document.createElement('option')
+  opt.value = key
+  opt.textContent = desc.name
+  volSel.insertBefore(opt, volSel.querySelector('option[value="__other__"]'))
+  if (select) volSel.value = key
+  return key
+}
+
+async function showVolume(key) {
+  const desc = volumeRegistry[key]
+  if (!desc) return
+  if (key === currentVolKey && desc.image) return   // already displayed — nothing to do
+
+  // Preserve the crosshair in world mm across the switch.
+  let mm = null
+  if (nv.volumes.length) {
+    try { mm = nv.frac2mm([...nv.scene.crosshairPos]) } catch (e) {}
+  }
+
+  // First selection of this volume: decode + upload once, then keep it resident.
+  if (!desc.image) {
+    const item = { colormap: dwiCmap, opacity: 1 }
+    if (desc.url) {
+      item.url = desc.url
+    } else if (desc.file) {
+      if (!desc.blobUrl) desc.blobUrl = URL.createObjectURL(desc.file)
+      item.url  = desc.blobUrl
+      item.name = desc.file.name   // blob URLs carry no extension; let NiiVue infer the format
+    }
+    try {
+      await nv.addVolumeFromUrl(item)   // add without dropping the resident volumes
+    } catch (e) {
+      console.warn('[volume] failed to load', desc.name, e)
+      alert('Could not load volume: ' + desc.name)
+      return
+    }
+    desc.image = nv.volumes[nv.volumes.length - 1]
+    desc.defCalMin = desc.image.cal_min   // per-volume default window for the 'r' reset
+    desc.defCalMax = desc.image.cal_max
+  }
+
+  desc.image.colormap = dwiCmap   // colormap follows the shown volume
+  // Show only the chosen volume's pixels AND its colorbar; resident volumes
+  // keep their own colormap but their colorbars stay hidden so they don't pile up.
+  for (const v of nv.volumes) {
+    const shown = (v === desc.image)
+    v.opacity = shown ? 1 : 0
+    v.colorbarVisible = shown
+  }
+  if (nv.volumes[0] !== desc.image) nv.setVolume(desc.image, 0)
+  else nv.updateGLVolume()
+
+  currentVolKey = key
+  volSel.value = key
+  nv.setCrosshairColor(ACCENT_YELLOW_RGBA)
+  nv.setCrosshairWidth(0.5)
+  if (mm) {
+    const frac = nv.mm2frac([mm[0], mm[1], mm[2]])
+    if (frac) nv.scene.crosshairPos = [...frac]
+  }
+  if (typeof nv.createOnLocationChange === 'function') nv.createOnLocationChange()
+  nv.drawScene()
+  syncClipInputs()
+  calibrateWindowingGain()   // the new volume can have a totally different intensity range
+}
+
+// Seed the dropdown: the already-loaded FA map (if any) links directly to its
+// resident NVImage rather than re-adding it, then "other…" for arbitrary files.
+if (FA_URL) {
+  const img = nv.volumes[0] || null
+  currentVolKey = addVolumeOption({
+    name: 'fa.nii.gz', url: FA_URL, image: img,
+    defCalMin: img ? img.cal_min : null, defCalMax: img ? img.cal_max : null,
+  }, true)
+}
+{
+  const other = document.createElement('option')
+  other.value = '__other__'
+  other.textContent = 'other…'
+  volSel.appendChild(other)
+}
+
+volSel.addEventListener('change', () => {
+  if (volSel.value === '__other__') {
+    volSel.value = currentVolKey ?? ''   // revert; the real switch commits once a file is picked
+    volFile.click()
+    return
+  }
+  showVolume(volSel.value)
+})
+volFile.addEventListener('change', () => {
+  const file = volFile.files && volFile.files[0]
+  volFile.value = ''   // reset so the same file can be re-picked later
+  if (!file) return
+  showVolume(addVolumeOption({ name: file.name, file }, true))
+})
+
+// Show the nth loaded orthoslice volume (1-based), in dropdown order; 0 opens
+// the "other…" file picker. Same shortcuts as the main tab's orthoslices.
+function showVolumeByIndex(n) {
+  const opts = [...volSel.options].filter(o => o.value !== '__other__')
+  if (opts[n - 1]) showVolume(opts[n - 1].value)
+}
+
+// ── orthoslice zoom (Ctrl + scroll) ───────────────────────────────────────
+let sliceZoom = 1
+document.getElementById('gl-dwi').addEventListener('wheel', e => {
+  if (!e.ctrlKey) return
+  e.preventDefault(); e.stopImmediatePropagation()
+  sliceZoom = Math.max(0.3, Math.min(8, sliceZoom * (e.deltaY < 0 ? 1.1 : 1/1.1)))
+  nv.scene.pan2Dxyzmm[3] = sliceZoom; nv.drawScene()
+}, {capture:true, passive:false})
+
+// Reset the orthoslices: viewport (zoom + pan) and the shown volume's default
+// window — same shortcut and behavior as the main tab's resetSliceView().
+function resetDwiView() {
+  sliceZoom = 1
+  nv.scene.pan2Dxyzmm = [0, 0, 0, 1]
+  const bg = nv.volumes[0], desc = volumeRegistry[currentVolKey]
+  if (bg && desc && desc.defCalMin != null) {
+    bg.cal_min = desc.defCalMin; bg.cal_max = desc.defCalMax
+    nv.updateGLVolume()
+    syncClipInputs()
+  }
+  nv.drawScene()
+}
+
+document.addEventListener('keydown', e => {
+  const t = e.target
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' ||
+            t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+  if (e.ctrlKey || e.metaKey || e.altKey) return
+  switch (e.key.toLowerCase()) {
+    case '1': case '2': case '3': case '4': case '5':
+    case '6': case '7': case '8': case '9':
+      showVolumeByIndex(+e.key); e.preventDefault(); break
+    case '0': volFile.click(); e.preventDefault(); break
+    case 'r': resetDwiView(); e.preventDefault(); break
+  }
+})
+
+// Same per-hemisphere accent colors as the main tab's Streamlines overlay.
+const streamMeshes = {}
+const [lhMesh, rhMesh] = await Promise.all([
+  STREAMLINES.lh ? niivue.NVMesh.loadFromUrl({ url: STREAMLINES.lh, gl: nv.gl, rgba255: [102, 179, 255, 255] }) : null,
+  STREAMLINES.rh ? niivue.NVMesh.loadFromUrl({ url: STREAMLINES.rh, gl: nv.gl, rgba255: [255, 133, 77, 255] }) : null,
+])
+for (const m of [lhMesh, rhMesh]) if (m) nv.addMesh(m)
+streamMeshes.lh = lhMesh
+streamMeshes.rh = rhMesh
+
+let streamVisible = true       // "Streamlines: on/off" button
+let streamMode = 'selected'    // 'selected' | 'all' — "Mode" button
+let lastVertices = null        // most recent neighbor-ring set from the main tab (null until first sync)
+
+// Same dps/dpsThreshold selection trick as the main tab's Streamlines section
+// (see cortical_browser.py's setStreamlineSelection): flag the given vertex
+// IDs' streamlines and threshold everything else out, rather than replacing
+// the whole tractogram. Takes an array so "Selected vertex" mode can show the
+// synced neighbor-ring set, not just the single primary vertex.
+function setStreamlineSelection(mesh, vertexIds) {
+  if (!mesh?.offsetPt0) return
+  const n = mesh.offsetPt0.length - 1
+  const flags = new Float32Array(n)
+  for (const v of vertexIds) if (v >= 0 && v < n) flags[v] = 1
+  mesh.dps = [{ id: 'vertex-selection', vals: flags }]
+  nv.setMeshProperty(mesh.id, 'dpsThreshold', 0.5)
+}
+function showAllStreamlines() {
+  for (const m of [streamMeshes.lh, streamMeshes.rh]) if (m) nv.setMeshProperty(m.id, 'dpsThreshold', NaN)
+}
+function applyStreamlineVisibility() {
+  const op = streamVisible ? 1 : 0
+  for (const m of [streamMeshes.lh, streamMeshes.rh]) if (m) nv.setMeshProperty(m.id, 'opacity', op)
+  nv.drawScene()
+}
+// Re-applied whenever the mode button is clicked locally, or a fresh sync
+// message arrives — mirrors the main tab's applyStreamlineSelection().
+function applyStreamlineDisplay() {
+  if (streamMode === 'all' || !lastVertices) showAllStreamlines()
+  else {
+    setStreamlineSelection(streamMeshes.lh, lastVertices)
+    setStreamlineSelection(streamMeshes.rh, lastVertices)
+  }
+}
+
+// The DWI-space streamlines are the exact warp target of the T1-space ones
+// loaded in the main tab: point i of streamline v here IS the DWI-space
+// location of point i of streamline v there. So a (vertex, depth) pair
+// selected in T1 space indexes directly into this mesh's own pts/offsetPt0 —
+// no coordinate transform needed, just the same lookup the main tab's
+// streamline-selection feature already does.
+function placeCrosshairAtStreamlinePoint(mesh, vertex, depth) {
+  if (!mesh?.offsetPt0 || !nv.volumes.length) return null
+  const start = mesh.offsetPt0[vertex]
+  const end   = mesh.offsetPt0[vertex + 1]
+  if (start === undefined || end === undefined || end <= start) return null
+  const idx = start + Math.max(0, Math.min(end - start - 1, depth))
+  const xyz = [mesh.pts[idx * 3], mesh.pts[idx * 3 + 1], mesh.pts[idx * 3 + 2]]
+  const frac = nv.mm2frac(xyz)
+  if (!frac) return null
+  nv.scene.crosshairPos = [...frac]
+  if (typeof nv.createOnLocationChange === 'function') nv.createOnLocationChange()
+  nv.drawScene()
+  return xyz
+}
+
+const dwiChannel = ('BroadcastChannel' in window) ? new BroadcastChannel('cortical-browser-dwi-crosshair') : null
+if (dwiChannel) {
+  dwiChannel.onmessage = ev => {
+    const { vertex, vertices, depth, hemi } = ev.data || {}
+    if (!Number.isInteger(vertex)) return
+    lastVertices = Array.isArray(vertices) && vertices.length ? vertices : [vertex]
+    const primary = (hemi === 'rh' ? streamMeshes.rh : streamMeshes.lh) || streamMeshes.lh || streamMeshes.rh
+    const xyz = primary ? placeCrosshairAtStreamlinePoint(primary, vertex, depth || 0) : null
+    applyStreamlineDisplay()
+    statusEl.textContent = xyz
+      ? `vertex ${vertex} (${hemi || 'lh'}) · depth ${((depth || 0) * STEP_MM).toFixed(1)} mm · ${xyz[0].toFixed(1)},${xyz[1].toFixed(1)},${xyz[2].toFixed(1)} mm`
+      : `vertex ${vertex}: no streamline point at that depth`
+  }
+  // Announce readiness now that the listener above is actually live — the
+  // main tab responds by re-sending its current selection. Without this, a
+  // selection made in the main tab just before this tab finished loading
+  // (the common case: pick a vertex, then click "Open DWI space") would be
+  // silently lost, since BroadcastChannel doesn't queue messages for
+  // listeners that don't exist yet.
+  dwiChannel.postMessage({ type: 'dwi-ready' })
+} else {
+  statusEl.textContent = "this browser doesn't support BroadcastChannel — can't sync with the main tab"
+}
+
+// ── streamline show/hide + all-vs-selected buttons ───────────────────────────
+{
+  const visBtn  = document.getElementById('dwiStreamVisBtn')
+  const modeBtn = document.getElementById('dwiStreamModeBtn')
+  if (!streamMeshes.lh && !streamMeshes.rh) {
+    visBtn.disabled = true
+    modeBtn.disabled = true
+    visBtn.title = modeBtn.title = 'No DWI-space streamlines found for this subject'
+  } else {
+    visBtn.addEventListener('click', () => {
+      streamVisible = !streamVisible
+      visBtn.textContent = `Streamlines: ${streamVisible ? 'on' : 'off'}`
+      applyStreamlineVisibility()
+    })
+    modeBtn.addEventListener('click', () => {
+      streamMode = streamMode === 'selected' ? 'all' : 'selected'
+      modeBtn.textContent = `Mode: ${streamMode}`
+      applyStreamlineDisplay()
+    })
+  }
+}
 </script>
 </body>
 </html>
@@ -1544,6 +3084,51 @@ def find_files(subj_dir, template=TEMPLATE):
         p = os.path.join(surf_dir, name)
         return p if os.path.isfile(p) else None
     return vol_path, surf(f'lh_white_{template}.surf.gii'), surf(f'rh_white_{template}.surf.gii')
+
+
+STREAMLINE_FILENAMES = {
+    'lh': 'lh_ico6_sym_laplace-wm-streamlines.tck',
+    'rh': 'rh_ico6_sym_laplace-wm-streamlines.tck',
+}
+
+
+def find_streamline_files(subj_dir):
+    """Locate the per-hemisphere Laplace white-matter streamlines
+    (.tck, in T1 space) under mri/, if present. Returns {'lh': path, 'rh': path},
+    only including hemispheres whose file actually exists."""
+    mri_dir = os.path.join(subj_dir, 'mri')
+    result = {}
+    for hemi, fname in STREAMLINE_FILENAMES.items():
+        p = os.path.join(mri_dir, fname)
+        if os.path.isfile(p):
+            result[hemi] = p
+    return result
+
+
+DWI_STREAMLINE_FILENAMES = {
+    'lh': 'lh_ico6_sym_laplace-wm-streamlines_dwispace.tck',
+    'rh': 'rh_ico6_sym_laplace-wm-streamlines_dwispace.tck',
+}
+
+
+def find_dwi_files(subj_dir):
+    """Locate the DWI-space FA map and its corresponding per-hemisphere
+    streamlines under dwi/. These are the same streamlines as
+    STREAMLINE_FILENAMES pre-warp: point index i of streamline v here is the
+    DWI-space location of point i of streamline v in the T1-space file, so a
+    (vertex, depth) pair already selected in T1 space locates directly into
+    these files with no separate transform. Returns {'fa': path, 'lh': path,
+    'rh': path}, omitting any that are missing."""
+    dwi_dir = os.path.join(subj_dir, 'dwi')
+    result = {}
+    fa_path = os.path.join(dwi_dir, 'fa.nii.gz')
+    if os.path.isfile(fa_path):
+        result['fa'] = fa_path
+    for hemi, fname in DWI_STREAMLINE_FILENAMES.items():
+        p = os.path.join(dwi_dir, fname)
+        if os.path.isfile(p):
+            result[hemi] = p
+    return result
 
 
 SURF_TYPE_FILENAMES = {
@@ -1583,16 +3168,40 @@ def find_surface_types(subjects_dir, subj_dir, template=TEMPLATE):
     return result
 
 
-def find_tsf_metrics(subj_dir, template=TEMPLATE):
-    dwi_dir = os.path.join(subj_dir, 'dwi')
-    metrics = {}
-    prefix  = f'lh_{template}_'
-    for tsf in sorted(glob.glob(os.path.join(dwi_dir, f'lh_{template}_*.tsf'))):
-        metric = os.path.basename(tsf)[len(prefix):].replace('.tsf', '')
-        rh     = os.path.join(dwi_dir, f'rh_{template}_{metric}.tsf')
-        if os.path.isfile(rh):
-            metrics[metric] = {'lh': tsf, 'rh': rh}
-    return metrics
+def find_tsf_metrics(subj_dir, template=TEMPLATE, metrics=METRICS, verbose=True):
+    """Locate each configured metric's lh/rh TSF files anywhere under the
+    subject dir (recursive, mirroring the normative builder's search — so files
+    nested in sub-folders like dwi/csd_fixels_singletissue/ are found, not just
+    those directly in dwi/). A metric is included only when both hemispheres are
+    present as siblings, and the result preserves the config's metric order.
+
+    With verbose=True (the default) it reports, per configured metric, whether it
+    was found and in which sub-folder, or why it was skipped (no file at all, or
+    an lh with no matching rh sibling) — so a missing metric is visible in the
+    terminal rather than silently absent from the dropdown."""
+    if verbose:
+        print(f'Finding TSF files (template={template}) under {subj_dir}:')
+    found = {}
+    for metric in metrics:
+        lh_matches = sorted(glob.glob(os.path.join(subj_dir, '**', f'lh_{template}_{metric}.tsf'),
+                                      recursive=True))
+        chosen = next(((lh, rh) for lh in lh_matches
+                       if os.path.isfile(rh := os.path.join(os.path.dirname(lh),
+                                                            f'rh_{template}_{metric}.tsf'))), None)
+        if chosen:
+            found[metric] = {'lh': chosen[0], 'rh': chosen[1]}
+            if verbose:
+                rel = os.path.relpath(chosen[0], subj_dir)
+                print(f'  found    {metric:12s} {rel}')
+        elif verbose:
+            if not lh_matches:
+                print(f'\033[31m  MISSING  {metric:12s} no lh/rh .tsf found\033[0m')
+            else:
+                rel = os.path.relpath(os.path.dirname(lh_matches[0]), subj_dir)
+                print(f'\033[31m  MISSING  {metric:12s} lh in {rel}/ but no rh sibling\033[0m')
+    if verbose:
+        print(f'  -> {len(found)}/{len(metrics)} configured metric(s) available: {list(found) or "none"}')
+    return found
 
 
 # ── TSF → func.gii conversion ─────────────────────────────────────────────────
@@ -1602,10 +3211,16 @@ def find_tsf_metrics(subj_dir, template=TEMPLATE):
 # which only runs for a metric once it's actually requested.
 
 def read_tsf_matrix(tsf_path):
-    """Read a TSF file into a padded (n_vertices, n_depths) float32 matrix."""
+    """Read a TSF file into a padded (n_vertices, n_depths) float32 matrix.
+    Both the -1 invalid sentinel and the short-track NaN padding are left as
+    NaN (matching the stats/normative readers) so they read as "no data" —
+    excluded from profile averages and shown as gaps, never as spurious 0/-1
+    values. The surface overlay re-fills these to 0 at gii-write time
+    (write_func_gii), since NaN is only meaningful for the profile matrices."""
     _, tracks = read_mrtrix_tsf(tsf_path)
-    M = pad_to_matrix(tracks).astype(np.float32)
-    return np.nan_to_num(M, nan=0.0)
+    M = pad_to_matrix(tracks).astype(np.float32)   # NaN where a track is short
+    M[M == -1] = np.nan                            # mask mrtrix invalid sentinel
+    return M
 
 
 def matrix_cal_range(M):
@@ -1616,13 +3231,16 @@ def matrix_cal_range(M):
 
 
 def compute_asym_matrix(lh_M, rh_M):
-    """Compute asymmetry index (LH-RH)/mean(LH,RH)."""
+    """Asymmetry index (LH-RH)/mean(LH,RH). Invalid inputs (NaN) and undefined
+    ratios (both hemispheres zero → 0/0) propagate as NaN, so they're excluded
+    from profiles and cohort averages rather than biasing them toward 0."""
     LH = lh_M.astype(np.float64)
     RH = rh_M.astype(np.float64)
     denom = (LH + RH) / 2.0
     with np.errstate(divide='ignore', invalid='ignore'):
-        A = np.where(denom != 0.0, (LH - RH) / denom, 0.0).astype(np.float32)
-    return np.nan_to_num(A, nan=0.0, posinf=0.0, neginf=0.0)
+        A = ((LH - RH) / denom).astype(np.float32)
+    A[~np.isfinite(A)] = np.nan   # NaN input or 0/0 → undefined
+    return A
 
 
 def asym_cal_range():
@@ -1632,6 +3250,11 @@ def asym_cal_range():
 
 
 def write_func_gii(M, out_path):
+    # NaN ("no data") is meaningful only for the profile matrices; on the
+    # surface overlay it would render unpredictably, so zero-fill a copy here
+    # (the caller's array — written to the .f32 profile file — keeps its NaN).
+    # Invalid vertices then clamp to the low end of the colormap, as before.
+    M = np.nan_to_num(M, nan=0.0)
     intent  = nib.nifti1.intent_codes['NIFTI_INTENT_NONE']
     darrays = [nib.gifti.GiftiDataArray(M[:, d], intent=intent, datatype='NIFTI_TYPE_FLOAT32')
                for d in range(M.shape[1])]
@@ -1766,29 +3389,186 @@ def materialize_normative(subjects_dir, metric, out_dir, template=TEMPLATE):
     return file_entries
 
 
+# ── multivariate (Mahalanobis + z-score) explorer ──────────────────────────────
+# Port of cortical_subject_mahal_by_depth.m: for one vertex, at each depth,
+# compare the subject's per-metric vector against the cohort's multivariate
+# distribution (both hemispheres pooled to better estimate the covariance).
+# Computed on demand per selected vertex, served as JSON to the /mahal endpoint —
+# far too much data to precompute for every vertex (nVerts * nDepths * nMetrics^2).
+
+def _subject_tsf_nan(tsf_path):
+    """One subject metric/hemi as an (nVerts, nDepths) matrix with the -1
+    invalid sentinel and short-track padding both left as NaN — unlike the
+    display path's read_tsf_matrix, which zero-fills them (wrong for stats)."""
+    _, tracks = read_mrtrix_tsf(tsf_path)
+    M = pad_to_matrix(tracks)          # float32, NaN where a track is short
+    M[M == -1] = np.nan                # mask invalid sentinel (as the cohort builder does)
+    return M
+
+
+def _mahal_sq(x, mu, cov, n_valid, n_metrics):
+    """Squared Mahalanobis distance of vector x from a distribution with mean
+    mu and covariance cov (matching MATLAB mahal, which returns the squared
+    distance). NaN (→ None) when the subject vector is incomplete or the
+    cohort can't support a covariance for this many metrics."""
+    if cov is None or n_valid <= n_metrics:
+        return None
+    if np.any(np.isnan(x)) or np.any(np.isnan(mu)):
+        return None
+    d = x - mu
+    try:
+        sol = np.linalg.solve(cov, d)
+    except np.linalg.LinAlgError:
+        sol = np.linalg.pinv(cov) @ d
+    val = float(d @ sol)
+    return val if np.isfinite(val) else None
+
+
+def _jsonable(arr):
+    """numpy float array → nested Python lists with any non-finite value
+    (NaN/inf, e.g. an all-invalid mean or a single-sample std) replaced by
+    None, so the front end draws a gap rather than a bogus point."""
+    a = np.asarray(arr, dtype=np.float64)
+    conv = lambda x: (float(x) if np.isfinite(x) else None)
+    if a.ndim == 1:
+        return [conv(v) for v in a]
+    return [[conv(v) for v in row] for row in a]
+
+
+def compute_multivariate(subjects_dir, tsf_metrics, subj_cache, vertices,
+                         primary=None, template=TEMPLATE):
+    """Per-depth squared Mahalanobis distance and per-metric z-scores (LH and
+    RH), aggregated over a set of vertices (the selected vertex plus its
+    neighbor-ring set). Mirrors the univariate profile panels: each vertex
+    yields a Mahalanobis-by-depth vector and per-depth z-vectors, and we return
+    the mean ± sd across vertices. With a single vertex the sd arrays are all
+    None (no band). Returns a JSON-ready dict, or None if there's no cohort
+    file / no shared metrics / no in-range vertex."""
+    if isinstance(vertices, int):
+        vertices = [vertices]
+    h5_path = os.path.join(subjects_dir, 'templates', 'normative', f'{template}_multivariate.h5')
+    if not os.path.isfile(h5_path):
+        return None
+    with h5py.File(h5_path, 'r') as h5f:
+        cohort_metrics = list(h5f['metrics'].asstr()[:])
+        n_subjects = int(h5f['subjects'].shape[0])
+        n_cohort_verts = h5f['lh_M'].shape[0]
+        # Metrics the cohort AND this subject both have, ordered by the cohort's
+        # metric axis so the subject vector lines up with lh_M/rh_M column-wise.
+        metrics = [m for m in cohort_metrics if m in tsf_metrics]
+        # Unique, in-range, sorted so h5py fancy indexing is happy (order does
+        # not matter — we aggregate across vertices).
+        verts = sorted({int(v) for v in vertices if 0 <= int(v) < n_cohort_verts})
+        if not metrics or not verts:
+            return None
+        midx = [cohort_metrics.index(m) for m in metrics]
+        lh_c = np.asarray(h5f['lh_M'][verts])[:, :, :, midx].astype(np.float64)  # (nV, nDepthsL, nSub, nUsed)
+        rh_c = np.asarray(h5f['rh_M'][verts])[:, :, :, midx].astype(np.float64)  # (nV, nDepthsR, nSub, nUsed)
+
+    # Subject's own per-metric matrices (NaN-masked), cached for the session.
+    for m in metrics:
+        if m not in subj_cache:
+            subj_cache[m] = (_subject_tsf_nan(tsf_metrics[m]['lh']),
+                             _subject_tsf_nan(tsf_metrics[m]['rh']))
+
+    n_used   = len(metrics)
+    n_depths = min(lh_c.shape[1], rh_c.shape[1])   # combine both hemis per depth
+    nV       = len(verts)
+
+    def subj_vec(vertex, hemi_i):
+        out = np.full((n_depths, n_used), np.nan)
+        for j, m in enumerate(metrics):
+            M = subj_cache[m][hemi_i]
+            if vertex >= M.shape[0]:
+                continue
+            row = M[vertex]
+            dd = min(n_depths, row.shape[0])
+            out[:dd, j] = row[:dd]
+        return out
+
+    # Per-vertex results: NaN where undefined so the aggregation can skip them.
+    mahal = [np.full((nV, n_depths), np.nan) for _ in (0, 1)]           # (nV, nDepths)
+    zsc   = [np.full((nV, n_depths, n_used), np.nan) for _ in (0, 1)]   # (nV, nDepths, nUsed)
+    for vi, vertex in enumerate(verts):
+        subj = (subj_vec(vertex, 0), subj_vec(vertex, 1))   # (lh, rh)
+        for d in range(n_depths):
+            cohort_d = np.vstack([lh_c[vi, d], rh_c[vi, d]])   # (2*nSub, nUsed)
+            C = cohort_d[~np.any(np.isnan(cohort_d), axis=1)]  # drop subjects missing any metric
+            nC = C.shape[0]
+            if nC >= 1:
+                mu = C.mean(axis=0)
+                sd = C.std(axis=0, ddof=0)                     # population std, as MATLAB std(...,1)
+            else:
+                mu = np.full(n_used, np.nan); sd = np.full(n_used, np.nan)
+            cov = np.atleast_2d(np.cov(C, rowvar=False, ddof=1)) if nC > 1 else None
+            for h in (0, 1):
+                x = subj[h][d]
+                ms = _mahal_sq(x, mu, cov, nC, n_used)
+                mahal[h][vi, d] = np.nan if ms is None else ms
+                with np.errstate(invalid='ignore', divide='ignore'):
+                    zsc[h][vi, d, :] = np.where(sd > 0, (x - mu) / sd, np.nan)
+
+    def aggregate(h):
+        """Mean ± sd across vertices, ignoring NaN. Signed z feeds the bar
+        chart; |z| feeds the radar; both need their own mean/sd because
+        mean(|z|) != |mean(z)|. sd uses ddof=1, so it is None for a lone
+        vertex."""
+        m_arr, z_arr = mahal[h], zsc[h]
+        absz = np.abs(z_arr)
+        with warnings.catch_warnings():   # all-NaN slices are expected (fully invalid depths)
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            nan_sd = lambda a, shape: (np.nanstd(a, axis=0, ddof=1) if nV > 1 else np.full(shape, np.nan))
+            return {
+                'mahal':    _jsonable(np.nanmean(m_arr, axis=0)),
+                'mahal_sd': _jsonable(nan_sd(m_arr, n_depths)),
+                'z':        _jsonable(np.nanmean(z_arr, axis=0)),
+                'z_sd':     _jsonable(nan_sd(z_arr, (n_depths, n_used))),
+                'absz':     _jsonable(np.nanmean(absz, axis=0)),
+                'absz_sd':  _jsonable(nan_sd(absz, (n_depths, n_used))),
+            }
+
+    return {
+        'vertex': int(primary if primary is not None else verts[0]),
+        'n_vertices': nV, 'metrics': metrics, 'step_mm': STEP_MM,
+        'n_depths': int(n_depths), 'n_subjects': n_subjects,
+        'lh': aggregate(0), 'rh': aggregate(1),
+    }
+
+
 # ── HTML generation ───────────────────────────────────────────────────────────
 
-def make_html(subj_id, vol_path, lh_path, rh_path, overlay_info, port, surf_types=None, normative_info=None, template=TEMPLATE):
+def make_html(subj_id, vol_path, lh_path, rh_path, overlay_info, port, surf_types=None,
+              normative_info=None, template=TEMPLATE, cache_bust='', streamline_files=None,
+              dwi_available=False):
     base = f'http://localhost:{port}/data'
+    # The /data/ files are served immutable (see _reply), and their URLs depend
+    # only on hemi/template/metric — NOT the subject. Two subjects on the same
+    # port therefore share URLs, so the browser would serve subject A's cached
+    # bytes for subject B. A per-launch token in the query string gives each
+    # session its own cache keys (the server ignores the query when locating the
+    # file), busting the cache across subjects while keeping it within a session.
+    q = f'?v={cache_bust}' if cache_bust else ''
 
     volumes = []
     if vol_path:
-        volumes.append({'url': f'{base}/{os.path.basename(vol_path)}',
+        volumes.append({'url': f'{base}/{os.path.basename(vol_path)}{q}',
+                        'name': os.path.basename(vol_path),
                         'colormap': 'gray', 'opacity': 1})
     # Per-hemisphere accent colors; the front-end derives the LH/RH plot line
     # colors from these same rgba255 values so surfaces and plots stay in sync.
     surfs = []
     if lh_path:
-        surfs.append({'url': f'{base}/{os.path.basename(lh_path)}',
+        surfs.append({'url': f'{base}/{os.path.basename(lh_path)}{q}',
                       'rgba255': [102, 179, 255, 255], 'hemi': 'lh'})   # #66B3FF
     if rh_path:
-        surfs.append({'url': f'{base}/{os.path.basename(rh_path)}',
+        surfs.append({'url': f'{base}/{os.path.basename(rh_path)}{q}',
                       'rgba255': [255, 133, 77, 255], 'hemi': 'rh'})    # #FF854D
 
     surf_types_urls = {
-        surf_type: {hemi: f'{base}/{os.path.basename(p)}' for hemi, p in hemis.items()}
+        surf_type: {hemi: f'{base}/{os.path.basename(p)}{q}' for hemi, p in hemis.items()}
         for surf_type, hemis in (surf_types or {}).items()
     }
+    streamlines_urls = {hemi: f'{base}/{os.path.basename(p)}{q}' for hemi, p in (streamline_files or {}).items()}
 
     metric_opts = '\n'.join(
         f'      <option value="{m}">{m}</option>' for m in overlay_info
@@ -1807,9 +3587,12 @@ def make_html(subj_id, vol_path, lh_path, rh_path, overlay_info, port, surf_type
         ('__VOLUMES_JSON__',   json.dumps(volumes)),
         ('__SURFS_JSON__',     json.dumps(surfs)),
         ('__SURF_TYPES_JSON__', json.dumps(surf_types_urls)),
+        ('__STREAMLINES_JSON__',     json.dumps(streamlines_urls)),
+        ('__DWI_AVAILABLE_JSON__', json.dumps(bool(dwi_available))),
         ('__NORMATIVE_JSON__', json.dumps(normative_info or {})),
         ('__METRICS_JSON__',   json.dumps(overlay_info)),
         ('__BASE_URL__',       base),
+        ('__CACHE_BUST__',     cache_bust),
         ('__TEMPLATE__',       template),
         ('__STEP_MM__',        str(STEP_MM)),
         ('__METRIC_OPTIONS__', metric_opts),
@@ -1821,10 +3604,36 @@ def make_html(subj_id, vol_path, lh_path, rh_path, overlay_info, port, surf_type
     return html
 
 
+def make_dwi_html(subj_id, dwi_files, port, cache_bust=''):
+    """Build the companion DWI-space page: FA map + the DWI-space streamlines,
+    synced to the main tab's vertex/depth selection via BroadcastChannel."""
+    base = f'http://localhost:{port}/data'
+    q = f'?v={cache_bust}' if cache_bust else ''
+    fa_path = dwi_files.get('fa')
+    fa_url = f'{base}/{os.path.basename(fa_path)}{q}' if fa_path else ''
+    streamlines_urls = {hemi: f'{base}/{os.path.basename(p)}{q}'
+                         for hemi, p in dwi_files.items() if hemi in ('lh', 'rh')}
+
+    html = _DWI_HTML
+    for k, v in [
+        ('__SUBJ_ID__',        subj_id),
+        ('__NIIVUE_CDN__',     NIIVUE_CDN),
+        ('__FA_URL__',         fa_url),
+        ('__STREAMLINES_JSON__', json.dumps(streamlines_urls)),
+        ('__STEP_MM__',        str(STEP_MM)),
+    ]:
+        html = html.replace(k, v)
+    return html
+
+
 # ── HTTP server ───────────────────────────────────────────────────────────────
 
 def make_handler(html_bytes, file_map, overlay_arrays, materialized, out_dir,
-                  subjects_dir=None, normative_materialized=None, template=TEMPLATE):
+                  subjects_dir=None, normative_materialized=None, template=TEMPLATE,
+                  tsf_metrics=None, dwi_html_bytes=None):
+    # Session cache of the subject's NaN-masked per-metric matrices, populated
+    # lazily on the first /mahal request and reused across vertices.
+    mv_subject_cache = {}
     # Matches lh_<template>_<metric>.func.gii, rh_..., asym_..., and the
     # corresponding _matrix.f32 files, isolating <metric>.
     overlay_re = re.compile(
@@ -1840,6 +3649,15 @@ def make_handler(html_bytes, file_map, overlay_arrays, materialized, out_dir,
             path = self.path.split('?')[0]
             if path in ('/', '/index.html'):
                 self._reply(200, 'text/html; charset=utf-8', html_bytes)
+                return
+            if path == '/dwi':
+                if dwi_html_bytes:
+                    self._reply(200, 'text/html; charset=utf-8', dwi_html_bytes)
+                else:
+                    self._reply(404, 'text/plain', b'DWI space not available for this subject\n')
+                return
+            if path == '/mahal':
+                self._serve_mahal()
                 return
             if path not in file_map:
                 self._materialize_if_needed(path)
@@ -1880,13 +3698,51 @@ def make_handler(html_bytes, file_map, overlay_arrays, materialized, out_dir,
                     file_map[url] = fpath
                 normative_materialized.add(metric)
 
+        def _serve_mahal(self):
+            """On-demand multivariate stats (squared Mahalanobis + z-scores) for
+            one vertex, as JSON — computed fresh from the cohort h5 + subject
+            tsf files (no static file to materialize)."""
+            if not subjects_dir or not tsf_metrics:
+                self._reply(404, 'text/plain', b'no cohort data\n')
+                return
+            qs = parse_qs(urlparse(self.path).query)
+            try:
+                vtx = int(qs.get('vertex', [''])[0])
+            except (ValueError, TypeError):
+                self._reply(400, 'text/plain', b'bad or missing vertex\n')
+                return
+            # Optional neighbor-ring set to aggregate over (mean ± sd across
+            # vertices); defaults to the selected vertex alone.
+            verts_arg = qs.get('vertices', [''])[0]
+            try:
+                verts = [int(v) for v in verts_arg.split(',') if v != ''] or [vtx]
+            except (ValueError, TypeError):
+                verts = [vtx]
+            try:
+                payload = compute_multivariate(subjects_dir, tsf_metrics, mv_subject_cache,
+                                               verts, primary=vtx, template=template)
+            except Exception as exc:   # noqa: BLE001 — report, don't crash the server
+                self._reply(500, 'text/plain', f'mahal error: {exc}\n'.encode('utf-8'))
+                return
+            if payload is None:
+                self._reply(404, 'text/plain', b'no multivariate data\n')
+                return
+            self._reply(200, 'application/json', json.dumps(payload).encode('utf-8'))
+
         def _reply(self, code, ctype, data, cacheable=False):
             self.send_response(code)
             self.send_header('Content-Type',                ctype)
             self.send_header('Content-Length',              str(len(data)))
             self.send_header('Access-Control-Allow-Origin', '*')
             if cacheable:
+                # Safe to cache forever only because the URL carries a per-launch
+                # cache-buster (see make_html) — otherwise a different subject on
+                # the same port would reuse these bytes.
                 self.send_header('Cache-Control', 'public, max-age=31536000, immutable')
+            else:
+                # Dynamic responses (the HTML page, /mahal JSON): never cache, so
+                # they can't leak across subjects sharing a port.
+                self.send_header('Cache-Control', 'no-store')
             self.end_headers()
             self.wfile.write(data)
 
@@ -1910,17 +3766,27 @@ def main():
         sys.exit(f'Subject directory not found: {subj_dir}')
 
     vol_path, lh_path, rh_path = find_files(subj_dir)
-    tsf_metrics = find_tsf_metrics(subj_dir)
-    surf_types  = find_surface_types(args.subjects_dir, subj_dir)
-
     print(f'Subject  : {args.subj_id}')
     print(f'Volume   : {vol_path  or "NOT FOUND"}')
     print(f'LH surf  : {lh_path   or "NOT FOUND"}')
     print(f'RH surf  : {rh_path   or "NOT FOUND"}')
-    print(f'Metrics  : {list(tsf_metrics) or "none"}')
+
+    tsf_metrics = find_tsf_metrics(subj_dir)   # prints its own per-metric finding report
+    surf_types  = find_surface_types(args.subjects_dir, subj_dir)
     print(f'Surf types: {list(surf_types) or "none"}')
 
+    streamline_files = find_streamline_files(subj_dir)
+    print(f'Streamlines: {list(streamline_files) or "none"}')
+
+    dwi_files = find_dwi_files(subj_dir)
+    print(f'DWI space: {list(dwi_files) or "none"}')
+
     out_dir = tempfile.mkdtemp(prefix='cortical_browser_')
+    # Materialized overlays/matrices live here for the session only; mkdtemp
+    # doesn't self-clean, so remove it on any graceful exit (normal quit or the
+    # Ctrl+C below). A hard kill (kill -9, crash) can't run this — the OS clears
+    # /tmp on reboot in that case.
+    atexit.register(shutil.rmtree, out_dir, ignore_errors=True)
     print(f'\nScanning {len(tsf_metrics)} metric(s) (stats only, no conversion yet)…')
     overlay_info, overlay_arrays = scan_overlay_stats(tsf_metrics)
 
@@ -1935,6 +3801,10 @@ def main():
     for hemis in surf_types.values():
         for p in hemis.values():
             file_map[f'/data/{os.path.basename(p)}'] = p
+    for p in streamline_files.values():
+        file_map[f'/data/{os.path.basename(p)}'] = p
+    for p in dwi_files.values():
+        file_map[f'/data/{os.path.basename(p)}'] = p
 
     materialized = set()
     first_metric = next(iter(tsf_metrics), None)
@@ -1950,14 +3820,24 @@ def main():
     print(f'Normative metrics: {list(normative_info) or "none"}')
     normative_materialized = set()
 
+    # Unique per launch (tempfile guarantees a fresh suffix), so every session's
+    # /data/ URLs differ from any previous subject's on the same port.
+    cache_bust = os.path.basename(out_dir)
     html_bytes = make_html(
         args.subj_id, vol_path, lh_path, rh_path,
-        overlay_info, args.port, surf_types, normative_info
+        overlay_info, args.port, surf_types, normative_info,
+        cache_bust=cache_bust, streamline_files=streamline_files,
+        dwi_available=bool(dwi_files.get('fa')),
     ).encode('utf-8')
+    dwi_html_bytes = (
+        make_dwi_html(args.subj_id, dwi_files, args.port, cache_bust=cache_bust).encode('utf-8')
+        if dwi_files.get('fa') else None
+    )
 
     server = HTTPServer(('localhost', args.port),
         make_handler(html_bytes, file_map, overlay_arrays, materialized, out_dir,
-                      args.subjects_dir, normative_materialized))
+                      args.subjects_dir, normative_materialized, tsf_metrics=tsf_metrics,
+                      dwi_html_bytes=dwi_html_bytes))
     url    = f'http://localhost:{args.port}/'
     print(f'\nBrowser  : {url}')
     print('Ctrl+C to quit.\n')
