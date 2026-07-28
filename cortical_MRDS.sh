@@ -131,7 +131,7 @@ then
   response=`cat ${outbase}_DTInolin_ResponseAnisotropic.txt | awk '{OFS = "," ;print $1,$2}'`
 
   
-  my_do_cmd mdtmrds \
+  cmd="mdtmrds \
   $dwi \
   $scheme \
   ${outbase} \
@@ -144,7 +144,11 @@ then
   -method diff \
   -lowb 2000 \
   -ntensors 3 \
-  1
+  -iso \
+  1"
+  # save the command to a text file for reproducibility
+  echo "$cmd" > ${outbase}_MRDS_cmd.txt
+  my_do_cmd $cmd
 
 else
   echolor yellow "[INFO] Will not run MRDS"
@@ -154,7 +158,7 @@ gzip -v ${outbase}_DTInolin*.nii ${outbase}_MRDS_*.nii
 
 
 doFixels=1
-fcheck=${SUBJECTS_DIR}/${sID}/dwi/mrds_fixels/index.mif
+fcheck=${outdir}/mrds_fixels/index.mif
 echolor green "[INFO] Looking for file: $fcheck"
 if [ -f $fcheck ]
 then
@@ -176,7 +180,7 @@ done
 
 if [ $doFixels -eq 1 ]
 then
-   mkdir -pv ${SUBJECTS_DIR}/${sID}/dwi/mrds_fixels
+   mkdir -pv ${outdir}/mrds_fixels
    for v in FA MD COMP_SIZE
    do
    tmpDir=$(mktemp -u)
@@ -189,22 +193,11 @@ then
     my_do_cmd peaks2fixel \
         ${outbase}_MRDS_Diff_FTest_PDDs_CARTESIAN_scaled-by-${v}.nii.gz \
         $tmpDir
-    mv -v ${tmpDir}/amplitudes.mif \
-        ${SUBJECTS_DIR}/${sID}/dwi/mrds_fixels/MRDS_DIFF_FTest_${v}.mif
-    mv -v ${tmpDir}/{directions,index}.mif ${SUBJECTS_DIR}/${sID}/dwi/mrds_fixels/
-    rm -fR $tmpDir
+    cp -v ${tmpDir}/amplitudes.mif \
+        ${outdir}/mrds_fixels/MRDS_DIFF_FTest_${v}.mif
+    cp -v ${tmpDir}/{directions,index}.mif ${outdir}/mrds_fixels/
+    my_do_cmd rm -fR $tmpDir
     done
 fi
 
-
-if [ -f $roi ]; then rm $roi;fi
-
-
-    # my_do_cmd inb_mrds_scalePDDs.sh \
-    #     ${outbase}_MRDS_Diff_BIC_PDDs_CARTESIAN.nii.gz \
-    #     ${outbase}_MRDS_Diff_BIC_COMP_SIZE.nii.gz \
-    #     ${outbase}_MRDS_Diff_BIC_PDDs_CARTESIAN_scaled.nii.gz
-
-    # my_do_cmd peaks2fixel \
-    #     ${outbase}_MRDS_Diff_BIC_PDDs_CARTESIAN_scaled.nii.gz \
-    #     ${SUBJECTS_DIR}/${sID}/dwi/mrds_fixels
+echolor green "[INFO] Finished MRDS for $sID"
