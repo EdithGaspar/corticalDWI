@@ -9,17 +9,12 @@ nDepths=30
 # ── Config file(s) ────────────────────────────────────────────────────────────
 source cortical_load_params.sh 2>/dev/null || true
 
-# The config's global 'fixel_dir' is used for CSD sampling at dwi/{fixel_dir}/...
-# MRDS fixels live at dwi/mrds/{fixel_dir}/..., a different subtree, so it needs
-# its own default rather than inheriting the CSD-oriented value from config.
-fixel_dir=mrds_fixels
-
 help() {
   echo "
-  Usage: $(basename $0) <subjID> [fixel_dir] [angle] [nDepths] [target_type]
+  Usage: $(basename $0) <subjID> [mrds_fixel_dir] [angle] [nDepths] [target_type]
 
-  <subjID>       subject ID in the form of sub-74277
-  [fixel_dir]    directory containing fixel files, e.g., mrds_fixels (default: ${fixel_dir})
+  <subjID>          subject ID in the form of sub-74277
+  [mrds_fixel_dir]  directory containing fixel files, e.g., mrds_fixels (default: ${mrds_fixel_dir})
   [angle]        Maximum angle (in degrees) between the streamline and the fixel direction (default: ${angle})
   [nDepths]      number of depth points to keep in the txt file (default: ${nDepths})
                  This is in steps, not mm,
@@ -45,7 +40,7 @@ fi
 
 # ── CLI args (highest priority) ───────────────────────────────────────────────
 subjID=$1
-[ -n "$2" ] && fixel_dir=$2; # mrds_fixels (or something else, but it has to be mrds)
+[ -n "$2" ] && mrds_fixel_dir=$2; # mrds_fixels (or something else, but it has to be mrds)
 [ -n "$3" ] && angle=$3
 [ -n "$4" ] && nDepths=$4; # number of depth points to keep in the txt file. The tsf saves them all.
 [ -n "$5" ] && target_type=$5
@@ -53,7 +48,7 @@ subjID=$1
 
 isOK=1
 
-fixel_dir=${SUBJECTS_DIR}/${subjID}/dwi/mrds/${fixel_dir}
+fixel_dir=${SUBJECTS_DIR}/${subjID}/dwi/mrds/${mrds_fixel_dir}
 if [ ! -d $fixel_dir ]
 then
   echolor red "[ERROR] Fixel directory does not exist: $fixel_dir"

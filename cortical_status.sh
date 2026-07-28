@@ -11,8 +11,8 @@ NC='\033[0m'
 
 target_type=ico6_sym          # built-in fallback
 target_type_cli=""            # set only when -t is explicitly passed
-fixel_dir=csd_fixels_singletissue  # built-in fallback
-fixel_dir_cli=""               # set only when -f is explicitly passed
+csd_fixel_dir=csd_fixels_singletissue  # built-in fallback
+csd_fixel_dir_cli=""           # set only when -f is explicitly passed
 tsv_mode=0
 remaining_mode=0
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -98,7 +98,7 @@ Arguments:
 Options:
   -t <type>   Surface target type (default: ${target_type})
   -f <dir>    Fixel directory name, relative to dwi/, for the sCSD step
-              (default: ${fixel_dir})
+              (default: ${csd_fixel_dir})
   -c <file>   Step config file (default: cortical_status_steps.conf)
   -r          List remaining (incomplete) steps per subject with long names
   -T          TSV output — machine-readable, no colors (1=done, 0=missing)
@@ -129,7 +129,7 @@ EOF
 while getopts "t:f:c:rTh" opt; do
     case $opt in
         t) target_type_cli=$OPTARG ;;
-        f) fixel_dir_cli=$OPTARG ;;
+        f) csd_fixel_dir_cli=$OPTARG ;;
         c) config_file=$OPTARG ;;
         r) remaining_mode=1 ;;
         T) tsv_mode=1 ;;
@@ -150,7 +150,7 @@ load_config "$config_file"
 
 # 3. CLI -t / -f win over everything
 [[ -n "$target_type_cli" ]] && target_type=$target_type_cli
-[[ -n "$fixel_dir_cli" ]] && fixel_dir=$fixel_dir_cli
+[[ -n "$csd_fixel_dir_cli" ]] && csd_fixel_dir=$csd_fixel_dir_cli
 
 if [ $# -gt 0 ]; then
     subjects=("$@")
@@ -213,7 +213,7 @@ for sID in "${subjects[@]}"; do
     steps=()
     for pattern in "${patterns[@]}"; do
         resolved="${sd}/${pattern/\{target_type\}/${target_type}}"
-        resolved="${resolved/\{fixel_dir\}/${fixel_dir}}"
+        resolved="${resolved/\{csd_fixel_dir\}/${csd_fixel_dir}}"
         steps+=("$(chk "$resolved")")
     done
 

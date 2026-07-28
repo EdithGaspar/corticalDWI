@@ -19,7 +19,7 @@ step_size="0.1"
 nsteps=100
 tck_step_size=0.5
 target_type=fsLR-32k
-fixel_dir=csd_fixels_singletissue
+csd_fixel_dir=csd_fixels_singletissue
 angle=45
 nDepths=30
 template=/misc/sherrington/lconcha/code/corticalDWI/test_cortical_mult-stats_per_region_template.txt
@@ -69,7 +69,7 @@ done
 cortical_CSD.sh $subjid
 #cortical_MRDS.sh $subjid; # Uncomment this if you want to run MRDS 
 cortical_tcksample_dti.sh $subjid $nDepths
-cortical_tcksamplefixels_afd.sh $subjid $fixel_dir $angle $nDepths $target_type
+cortical_tcksamplefixels_afd.sh $subjid $csd_fixel_dir $angle $nDepths $target_type
 
 for hemi in rh lh; do 
   cortical_separate_streamlines_by_aparc.sh $subjid $hemi $target_type
