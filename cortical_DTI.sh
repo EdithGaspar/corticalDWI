@@ -52,13 +52,18 @@ done
 if [ $isOK -eq 0 ]; then exit 2; fi
 
 
+outdir=${SUBJECTS_DIR}/${sID}/dwi/dti
+mkdir -pv $outdir
 dwi2tensor -mask $mask \
     -grad $scheme \
     $dwi \
     - | \
 tensor2metric - \
-    -fa ${SUBJECTS_DIR}/${sID}/dwi/fa.nii.gz \
-    -adc ${SUBJECTS_DIR}/${sID}/dwi/md.nii.gz \
-    -ad ${SUBJECTS_DIR}/${sID}/dwi/ad.nii.gz \
-    -rd ${SUBJECTS_DIR}/${sID}/dwi/rd.nii.gz \
-    -vector ${SUBJECTS_DIR}/${sID}/dwi/v1.nii.gz
+    -fa ${outdir}/fa.nii.gz \
+    -adc ${outdir}/md.nii.gz \
+    -ad ${outdir}/ad.nii.gz \
+    -rd ${outdir}/rd.nii.gz \
+    -vector ${outdir}/v1.nii.gz \
+    -cl ${outdir}/cl.nii.gz \
+    -cp ${outdir}/cp.nii.gz \
+    -cs ${outdir}/cs.nii.gz
