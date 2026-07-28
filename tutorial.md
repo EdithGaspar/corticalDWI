@@ -10,7 +10,6 @@ This pipeline includes several tools scattered around many different software su
 * [freesurfer](https://surfer.nmr.mgh.harvard.edu/)
 * [ANTs](https://surfer.nmr.mgh.harvard.edu/)
 * [workbench](https://www.humanconnectome.org/software/get-connectome-workbench)
-* [micapipe](https://micapipe.readthedocs.io/en/latest/)
 * [inb_tools](https://github.com/lconcha/inb_tools) (a collection of command-line tools used at our Institute).
 * Custom-made [mrtrix modules](https://github.com/lconcha/inb_mrtrix_modules).
 
@@ -63,12 +62,20 @@ freeview -v ${SUBJECTS_DIR}/$subjid/mri/brain.mgz -f ${SUBJECTS_DIR}/$subjid/sur
 ![surfaces](images/surfaces.png)
 
 # Running corticalDWI
-First we must prepare our environment, this will call for things in our `micapipe` environment.
+First we must prepare our environment, this will call for things in our `corticalDWI` environment.
+
+If you have not yet created the `corticalDWI` python environment, you can do it with:
+
+```bash
+conda env create -f corticalDWI.yml
+```
+
+then
 
 ```bash
 module load freesurfer/7.3.2 ANTs/ workbench_con/
 export SUBJECTS_DIR=/misc/sherrington/lconcha/TMP/glaucoma/fs_glaucoma; # do not forget to set this after any time you load the freesurfer module. We had already loaded it, it is here just as a reminder that the pipeline works well on v7.3.2
-conda activate micapipe  # crucial to do after module load to get the correct python in path
+conda activate corticalDWI  # crucial to do after module load to get the correct python in path
 ```
 
 And, of course, add the corticalDWI repository (and `inb_tools`, if needed) to your PATH. In my case:
