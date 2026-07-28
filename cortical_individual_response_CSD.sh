@@ -51,10 +51,11 @@ done
 if [ $isOK -eq 0 ]; then exit 2; fi
 
 
-
-resp_wm=${SUBJECTS_DIR}/${sID}/dwi/response_wm.txt
-resp_gm=${SUBJECTS_DIR}/${sID}/dwi/response_gm.txt
-resp_csf=${SUBJECTS_DIR}/${sID}/dwi/response_csf.txt
+outdir=${SUBJECTS_DIR}/${sID}/dwi/csd
+mkdir -pv $outdir
+resp_wm=${outdir}/response_wm.txt
+resp_gm=${outdir}/response_gm.txt
+resp_csf=${outdir}/response_csf.txt
 
 echolor green "[INFO] Calculating response functions"
 my_do_cmd dwi2response dhollander \

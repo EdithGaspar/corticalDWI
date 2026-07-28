@@ -36,9 +36,9 @@ group_resp_csf=${group_response_dir}/average_response_csf.txt
 # Compute multitissue fod's and fixels
 echolor green "[INFO] Performing multi-tissue CSD"
 
-fod_wm=${SUBJECTS_DIR}/${sID}/dwi/fod_wm.mif
-fod_gm=${SUBJECTS_DIR}/${sID}/dwi/fod_gm.mif
-fod_csf=${SUBJECTS_DIR}/${sID}/dwi/fod_csf.mif
+fod_wm=${SUBJECTS_DIR}/${sID}/dwi/csd/fod_wm.mif
+fod_gm=${SUBJECTS_DIR}/${sID}/dwi/csd/fod_gm.mif
+fod_csf=${SUBJECTS_DIR}/${sID}/dwi/csd/fod_csf.mif
 
 my_do_cmd dwi2fod msmt_csd \
   -mask $mask \
@@ -48,7 +48,7 @@ my_do_cmd dwi2fod msmt_csd \
   $group_resp_gm $fod_gm \
   $group_resp_csf $fod_csf
 
-csd_fixeldir=${SUBJECTS_DIR}/${sID}/dwi/csd_fixels
+csd_fixeldir=${SUBJECTS_DIR}/${sID}/dwi/csd/csd_fixels
 
 my_do_cmd fod2fixel \
   -afd afd_fixels.mif \
@@ -62,15 +62,15 @@ my_do_cmd fod2fixel \
 # Compute single tissue fod's and fixels
 echolor green "[INFO] Performing single-tissue WM CSD"
 
-fod_wm_single=${SUBJECTS_DIR}/${sID}/dwi/fod_wm_singletissue.mif
+fod_wm_single=${SUBJECTS_DIR}/${sID}/dwi/csd/fod_wm_singletissue.mif
 
-my_do_cmd dwi2fod msmt_csd \
+my_do_cmd dwi2fod csd \
   -mask $mask \
   -grad $scheme \
   $dwi \
   $group_resp_wm $fod_wm_single
 
-csd_fixeldir=${SUBJECTS_DIR}/${sID}/dwi/csd_fixels_singletissue
+csd_fixeldir=${SUBJECTS_DIR}/${sID}/dwi/csd/csd_fixels_singletissue
 
 my_do_cmd fod2fixel \
   -afd afd_fixels.mif \
