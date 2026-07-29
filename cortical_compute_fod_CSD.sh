@@ -32,6 +32,22 @@ group_resp_wm=${group_response_dir}/average_response_wm.txt
 group_resp_gm=${group_response_dir}/average_response_gm.txt
 group_resp_csf=${group_response_dir}/average_response_csf.txt
 
+isOK=1
+for f in $group_resp_wm $group_resp_gm $group_resp_csf
+do
+  if [ ! -f $f ]
+  then
+    echolor red "[ERROR] Cannot find group response file: $f"
+    isOK=0
+  fi
+done
+
+if [ $isOK -eq 0 ]
+then
+  echolor red "[ERROR] Cannot continue."
+  exit 2
+fi
+
 
 # Compute multitissue fod's and fixels
 echolor green "[INFO] Performing multi-tissue CSD"
@@ -64,7 +80,7 @@ echolor green "[INFO] Performing single-tissue WM CSD"
 
 fod_wm_single=${SUBJECTS_DIR}/${sID}/dwi/csd/fod_wm_singletissue.mif
 
-my_do_cmd dwi2fod csd \
+my_do_cmd dwi2fod msmt_csd \
   -mask $mask \
   -grad $scheme \
   $dwi \
