@@ -32,7 +32,7 @@ subjID=$1
 [ -n "$3" ] && target_type=$3
 
 
-fcheck=${SUBJECTS_DIR}/${subjID}/dwi/lh_${target_type}_fa.tsf
+fcheck=${SUBJECTS_DIR}/${subjID}/dwi/dti/lh_${target_type}_fa.tsf
 if [ -f $fcheck ]
 then
   echolor green "[INFO] File exists, will not overwrite: $fcheck"
@@ -40,7 +40,7 @@ then
 fi
 
     
-metrics="fa md ad rd"
+metrics="fa md ad rd cl cp cs"
 
 for hemi in lh rh
 do
@@ -57,8 +57,8 @@ do
   for metric in $metrics
   do
     #echolor green "Sampling $metric in $tck in $target_type in $hemi"
-    map=${SUBJECTS_DIR}/${subjID}/dwi/${metric}.nii.gz
-    tsfout=${SUBJECTS_DIR}/${subjID}/dwi/${hemi}_${target_type}_${metric}.tsf
+    map=${SUBJECTS_DIR}/${subjID}/dwi/dti/${metric}.nii.gz
+    tsfout=${SUBJECTS_DIR}/${subjID}/dwi/dti/${hemi}_${target_type}_${metric}.tsf
     if [ -f $tsfout ]
     then
       echolor yellow "[WARN] File exists, will not overwrite: $tsfout"
@@ -78,4 +78,4 @@ done
 
 
 
-my_do_cmd cortical_tsf2txt_in_fixeldir.sh ${SUBJECTS_DIR}/${subjID}/dwi/ $nDepths
+#my_do_cmd cortical_tsf2txt_in_fixeldir.sh ${SUBJECTS_DIR}/${subjID}/dwi/dti/ $nDepths
