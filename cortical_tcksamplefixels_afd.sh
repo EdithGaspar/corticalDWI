@@ -3,16 +3,16 @@ source `which my_do_cmd`
 
 help() {
   echo "
-  Usage: $(basename $0) <subjID> <csd_fixel_dir> <angle> <nDepths> <target_type>
+  Usage: $(basename $0) <subjID> [csd_fixel_dir] [angle] [nDepths] [target_type]
 
   <subjID>        subject ID in the form of sub-74277
-  <csd_fixel_dir> directory containing fixel files, e.g., csd_fixel
-  <angle>      Maximum angle (in degrees) between the streamline and the fixel direction.
+  [csd_fixel_dir] directory containing fixel files, e.g., csd_fixel
+  [angle]      Maximum angle (in degrees) between the streamline and the fixel direction.
                This is in degrees, e.g., 45.
-  <nDepths>    number of depth points to keep in the txt file.
+  [nDepths]    number of depth points to keep in the txt file.
                This is in steps, not mm,
                and has to be less than or equal to the number of depth points in the tsf file.
-  <target_type> fsLR-5k or fsLR-32k
+  [target_type] ico6_sym, fsLR-5k or fsLR-32k
 
   Only AFD values are sampled, and separated into parallel and perpendicular components.
   Perpendicular can be defined in two ways:
@@ -45,7 +45,7 @@ subjID=$1
 
 isOK=1
 
-fixel_dir=${SUBJECTS_DIR}/${subjID}/dwi/${csd_fixel_dir}
+fixel_dir=${SUBJECTS_DIR}/${subjID}/dwi/csd/${csd_fixel_dir}
 if [ ! -d $fixel_dir ]
 then
   echolor red "[ERROR] Fixel directory does not exist: $fixel_dir"
