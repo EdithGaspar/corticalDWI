@@ -66,7 +66,7 @@ dwi=${SUBJECTS_DIR}/${sID}/dwi/dwi.nii.gz
 bvec=${SUBJECTS_DIR}/${sID}/dwi/dwi.bvec
 bval=${SUBJECTS_DIR}/${sID}/dwi/dwi.bval
 scheme=${SUBJECTS_DIR}/${sID}/dwi/dwi.scheme
-outdir=${SUBJECTS_DIR}/${sID}/dwi/mrds/
+outdir=${SUBJECTS_DIR}/${sID}/dwi/mrds
 outbase=${outdir}/${sID}
 
 if [ ! -z "$roi" ]
@@ -139,7 +139,6 @@ then
   -response "$response" \
   -mask $mask \
   -modsel ftest \
-  -each \
   -fa -md -mse \
   -method diff \
   -lowb 2000 \
