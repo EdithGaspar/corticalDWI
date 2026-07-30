@@ -22,4 +22,6 @@ TEMPLATE = 'ico6_sym'
 # TSF files named {hemi}_{TEMPLATE}_<m>.tsf, located recursively under each
 # subject's directory (so files nested in sub-folders like
 # dwi/csd_fixels_singletissue/ are found too).
-METRICS = ['fa', 'md', 'ad', 'rd', 'afd-par', 'afd-perp']
+# If a subject is missing a metric, the browser will display a warning and skip it.
+METRICS = ['fa', 'md', 'ad', 'rd', 'cl', 'cp', 'cs', 'afd-par', 'afd-perp', 'mk', 'ak', 'rk',
+           'T1w_proc', 'flair_proc', 'T1w_proc_grad']

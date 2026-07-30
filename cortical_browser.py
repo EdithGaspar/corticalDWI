@@ -3311,6 +3311,16 @@ def scan_overlay_stats(tsf_metrics):
     for metric, hemis in tsf_metrics.items():
         lh_M = read_tsf_matrix(hemis['lh'])
         rh_M = read_tsf_matrix(hemis['rh'])
+        # LH/RH depth counts usually match (same streamline-sampling config for
+        # both hemis), but aren't guaranteed to — e.g. mri/-space metrics sampled
+        # from cortical_tcksample_mri.sh can differ by a step or two between
+        # hemispheres. Truncate both to their common depth so lh/rh/asym stay
+        # aligned: the front end assumes a single n_depths per metric shared by
+        # all three surfaces (depth slider, matrix stride, compute_asym_matrix's
+        # elementwise LH/RH op all rely on this).
+        common_d = min(lh_M.shape[1], rh_M.shape[1])
+        lh_M = lh_M[:, :common_d]
+        rh_M = rh_M[:, :common_d]
         cmin, cmax = matrix_cal_range(lh_M)
         amin, amax = asym_cal_range()
         info[metric] = {
