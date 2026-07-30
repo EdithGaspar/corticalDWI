@@ -152,6 +152,18 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
   display: flex; justify-content: space-between;
   font-size: 11px; color: var(--plot-text); margin-top: 2px; font-family: monospace;
 }
+.mv-warn {
+  position: fixed; left: 8px; bottom: 8px; z-index: 100; width: 208px;
+  background: rgba(51,38,0,0.92); border: 1px solid var(--accent-yellow);
+  color: var(--accent-yellow); font-size: 10px; line-height: 1.4;
+  padding: 5px 20px 5px 8px; border-radius: 4px; display: none;
+}
+.mv-warn-close {
+  position: absolute; top: 2px; right: 4px; cursor: pointer;
+  background: none; border: none; color: var(--accent-yellow);
+  font-size: 13px; line-height: 1; padding: 2px; opacity: 0.7;
+}
+.mv-warn-close:hover { opacity: 1; }
 </style>
 </head>
 <body>
@@ -1418,7 +1430,7 @@ function broadcastDwiCrosshair() {
   const btn = document.getElementById('openDwiBtn')
   if (!DWI_AVAILABLE) {
     btn.disabled = true
-    btn.title = 'No dwi/fa.nii.gz found for this subject'
+    btn.title = 'No dwi/dti/fa.nii.gz (or other fa.nii.gz under dwi/) found for this subject'
     btn.style.opacity = 0.4
   } else {
     btn.addEventListener('click', () => {
@@ -2097,6 +2109,22 @@ if (!MV_AVAILABLE) {
   }
 }
 
+// Warn when this subject has TSF metrics the cohort normative file doesn't
+// (e.g. newly added metrics computed per-subject before the cohort file was
+// rebuilt to include them) — compute_multivariate can only use metrics both
+// sides share, so these are silently dropped from Mahalanobis/radar/z-score
+// without this notice.
+if (MV_AVAILABLE) {
+  const missing = Object.keys(METRICS).filter(m => !(m in NORMATIVE))
+  if (missing.length) {
+    const el = document.getElementById('mvMetricWarning')
+    el.querySelector('#mvMetricWarningText').textContent =
+      `⚠ No cohort normative data for: ${missing.join(', ')} — excluded from Mahalanobis/radar/z-score panels`
+    el.style.display = 'block'
+    el.querySelector('.mv-warn-close').addEventListener('click', () => { el.style.display = 'none' })
+  }
+}
+
 // ── orthoslice zoom (Ctrl + scroll) ──────────────────────────────────────────
 let sliceZoom = 1
 document.getElementById('gl-slices').addEventListener('wheel', e => {
@@ -2633,6 +2661,10 @@ function setProfiles(lhStat, rhStat, asymStat, count, lhArea, rhArea, normStat) 
 window._nvSurf  = [nvLhL, nvRhL, nvAsym]
 window._nvSlice = nvSlices
 </script>
+<div id="mvMetricWarning" class="mv-warn">
+  <span id="mvMetricWarningText"></span>
+  <button type="button" class="mv-warn-close" title="Dismiss">&times;</button>
+</div>
 </body>
 </html>
 """
@@ -3113,17 +3145,27 @@ DWI_STREAMLINE_FILENAMES = {
 
 def find_dwi_files(subj_dir):
     """Locate the DWI-space FA map and its corresponding per-hemisphere
-    streamlines under dwi/. These are the same streamlines as
-    STREAMLINE_FILENAMES pre-warp: point index i of streamline v here is the
-    DWI-space location of point i of streamline v in the T1-space file, so a
-    (vertex, depth) pair already selected in T1 space locates directly into
-    these files with no separate transform. Returns {'fa': path, 'lh': path,
-    'rh': path}, omitting any that are missing."""
+    streamlines under dwi/. The FA map now lives in a model-specific
+    sub-folder (e.g. dwi/dti/fa.nii.gz) rather than directly under dwi/, so
+    it's found via a recursive search, preferring dwi/dti/fa.nii.gz (the
+    canonical DTI FA) if present and otherwise falling back to whatever
+    fa.nii.gz turns up first (e.g. under dwi/dki/). The streamlines are still
+    written directly under dwi/, so those are looked up there as before.
+    These are the same streamlines as STREAMLINE_FILENAMES pre-warp: point
+    index i of streamline v here is the DWI-space location of point i of
+    streamline v in the T1-space file, so a (vertex, depth) pair already
+    selected in T1 space locates directly into these files with no separate
+    transform. Returns {'fa': path, 'lh': path, 'rh': path}, omitting any
+    that are missing."""
     dwi_dir = os.path.join(subj_dir, 'dwi')
     result = {}
-    fa_path = os.path.join(dwi_dir, 'fa.nii.gz')
-    if os.path.isfile(fa_path):
-        result['fa'] = fa_path
+    dti_fa = os.path.join(dwi_dir, 'dti', 'fa.nii.gz')
+    if os.path.isfile(dti_fa):
+        result['fa'] = dti_fa
+    else:
+        fa_matches = sorted(glob.glob(os.path.join(dwi_dir, '**', 'fa.nii.gz'), recursive=True))
+        if fa_matches:
+            result['fa'] = fa_matches[0]
     for hemi, fname in DWI_STREAMLINE_FILENAMES.items():
         p = os.path.join(dwi_dir, fname)
         if os.path.isfile(p):
