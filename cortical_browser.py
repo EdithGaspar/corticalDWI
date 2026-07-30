@@ -94,7 +94,7 @@ button.cbtn {
 button.cbtn:hover { background: #484848; }
 #depth-label { color: #d1d1d1; min-width: 40px; }
 #pos-display  { color: #999999; font-size: 11px; max-width: 100%; white-space: pre-line; font-family: monospace; }
-#vtx-display  {
+.vtx-display  {
   color: #ccc; font-size: 11px; font-family: monospace; font-weight: bold;
   background: #262626; border: 1px solid #555555; border-radius: 3px;
   padding: 1px 7px; white-space: nowrap; min-width: 76px;
@@ -240,7 +240,12 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
       <label><input type="checkbox" id="pivotAtVertexChk"> Pivot@vertex</label>
       <button class="cbtn" id="resetPivotBtn" title="Reset 3D view rotation pivot to the whole-brain center">Reset pivot</button>
     </div>
-    <div class="ctl-row"><span id="vtx-display">—, —, — mm</span></div>
+    <div class="ctl-row">
+      <span class="glab">LH</span><span id="vtx-display-lh" class="vtx-display">—, —, — mm</span>
+    </div>
+    <div class="ctl-row">
+      <span class="glab">RH</span><span id="vtx-display-rh" class="vtx-display">—, —, — mm</span>
+    </div>
   </section>
 
   <section class="ctl-group">
@@ -517,10 +522,19 @@ function buildDivergingCmap(r0, g0, b0, r1, g1, b1) {
   }
   return { R, G, B, A }
 }
+// A flat (single-color) colormap: every LUT index maps to the same RGB, so a
+// layer using it always paints one solid color regardless of its cal_min/max
+// or the data value — used below to mark "no data" vertices with each panel's
+// own base tint, so they read as if no overlay were ever applied there.
+function buildFlatCmap(r, g, b) {
+  return { R: [r, r], G: [g, g], B: [b, b], A: [255, 255] }
+}
 const CUSTOM_CMAPS = {
   bwr:  buildDivergingCmap(  0,   0, 255, 255,   0,   0),  // blue-white-red
   gwr:  buildDivergingCmap(  0, 180,   0, 255,   0,   0),  // green-white-red
   cwr:  buildDivergingCmap(  0, 200, 200, 255,   0,   0),  // cyan-white-red
+  flat_lh: buildFlatCmap(...((LH_SURF?.rgba255 ?? [102, 179, 255]).slice(0, 3))),
+  flat_rh: buildFlatCmap(...((RH_SURF?.rgba255 ?? [255, 133, 77]).slice(0, 3))),
 }
 for (const nv of [nvLhL, nvRhL, nvAsym, nvSlices]) {
   for (const [name, cmap] of Object.entries(CUSTOM_CMAPS)) {
@@ -615,11 +629,66 @@ function layerAsymFor(metric) {
             opacity: layerOpacity, cal_min: currentAsymMin, cal_max: currentAsymMax }]
 }
 
+// NiiVue's mesh layer loader only reads a fixed whitelist of properties off the
+// layer descriptor (opacity/colormap/colormapNegative/useNegativeCmap/cal_min/
+// cal_max) — isTransparentBelowCalMin isn't among them and is hardcoded true at
+// load time, so it must be flipped afterward via setMeshLayerProperty (same
+// reason colormapInvert is re-applied via setMeshLayerProperty elsewhere rather
+// than trusted from the descriptor). Without this, any vertex below the
+// colormap's cal_min renders fully transparent, indistinguishable from "no
+// data"; we want it clamped to the colormap's lowest color instead.
+function disableTransparentBelowCalMin(nv) {
+  const mesh = nv.meshes[0]
+  if (mesh?.layers?.length) nv.setMeshLayerProperty(mesh.id, 0, 'isTransparentBelowCalMin', false)
+}
+
+// ── "no data" mask overlay ────────────────────────────────────────────────────
+// A second stacked layer that flags vertices where the underlying TSF matrix
+// is NaN at the current depth (no streamline reached this far / an explicitly
+// invalid sample) — distinct from a genuinely low-but-valid value, which the
+// data layer above already clamps to its lowest color rather than hiding.
+// This pipeline has no true per-vertex alpha, so the closest thing to
+// "transparent" it can do is paint a solid color; using each panel's own flat
+// base tint (flat_lh/flat_rh, registered above) makes a "no data" vertex read
+// as if no data overlay were ever applied there. mnCal for this layer is fixed
+// at 0.5 (independent of the live, user-adjustable data cal_min), so a mask
+// value of 0 (valid) always cleanly skips — leaving the data layer's color
+// untouched — while 1 (invalid) always paints.
+function invalidMask(matArray, nd, depth) {
+  const nVerts = matArray.length / nd
+  const mask = new Float32Array(nVerts)
+  for (let vi = 0; vi < nVerts; vi++) mask[vi] = Number.isNaN(matArray[vi * nd + depth]) ? 1 : 0
+  return mask
+}
+function applyInvalidMask(nv, matArray, nd, depth, cmapName) {
+  const mesh = nv.meshes[0]
+  if (!mesh?.layers?.length || !matArray) return
+  mesh.layers[1] = {
+    values: invalidMask(matArray, nd, depth), nFrame4D: 1, frame4D: 0,
+    colormap: cmapName, colormapNegative: 'winter', useNegativeCmap: false,
+    colormapInvert: false, colormapType: 0, colormapLabel: null,
+    isTransparentBelowCalMin: true, isAdditiveBlend: false, colorbarVisible: false,
+    outlineBorder: 0, opacity: 1, cal_min: 0.5, cal_max: 1,
+    cal_minNeg: NaN, cal_maxNeg: NaN, global_min: 0, global_max: 1,
+  }
+  mesh.updateMesh(nv.gl)
+}
+const MASK_CMAP_FOR = { lh: 'flat_lh', rh: 'flat_rh', asym: 'flat_lh' }   // nvAsym shares LH geometry/base color
+function refreshInvalidMasks(depth) {
+  if (!currentMetric) return
+  const nd = METRICS[currentMetric].n_depths
+  for (const [hemi, nv] of [['lh', nvLhL], ['rh', nvRhL], ['asym', nvAsym]]) {
+    const mat = matCache[`${hemi}_${currentMetric}`]
+    if (mat) applyInvalidMask(nv, mat, nd, depth, MASK_CMAP_FOR[hemi])
+  }
+}
+
 async function loadLhPanel(metric) {
   if (!LH_SURF || !lhSurfUrl) return
   console.time('loadLhPanel')
   markerMeshes.delete(nvLhL); neighborMeshes.delete(nvLhL)
   await nvLhL.loadMeshes([{ url: lhSurfUrl, rgba255: LH_SURF.rgba255, layers: layerDataFor('lh', metric) }])
+  disableTransparentBelowCalMin(nvLhL)
   applyShader(nvLhL, currentShader)
   console.timeEnd('loadLhPanel')
 }
@@ -629,6 +698,7 @@ async function loadRhPanel(metric) {
   console.time('loadRhPanel')
   markerMeshes.delete(nvRhL); neighborMeshes.delete(nvRhL)
   await nvRhL.loadMeshes([{ url: rhSurfUrl, rgba255: RH_SURF.rgba255, layers: layerDataFor('rh', metric) }])
+  disableTransparentBelowCalMin(nvRhL)
   applyShader(nvRhL, currentShader)
   console.timeEnd('loadRhPanel')
 }
@@ -638,6 +708,7 @@ async function loadAsymPanel(metric) {
   console.time('loadAsymPanel')
   markerMeshes.delete(nvAsym); neighborMeshes.delete(nvAsym)
   await nvAsym.loadMeshes([{ url: asymSurfUrl, rgba255: LH_SURF.rgba255, layers: layerAsymFor(metric) }])
+  disableTransparentBelowCalMin(nvAsym)
   applyShader(nvAsym, currentShader)
   console.timeEnd('loadAsymPanel')
 
@@ -1158,6 +1229,7 @@ function setDepth(d) {
   for (const nv of [nvLhL, nvRhL, nvAsym])
     for (const mesh of nv.meshes)
       if (mesh.layers?.length) nv.setMeshLayerProperty(mesh.id, 0, 'frame4D', d)
+  refreshInvalidMasks(d)
   broadcastDwiCrosshair()
   updateDepthMarker(mm)
 }
@@ -1520,7 +1592,8 @@ document.getElementById('metricSel').addEventListener('change', async e => {
     // three depth profiles against the newly-loaded metric.
     await selectVertex(currentVertex, nvLhL)
   } else {
-    document.getElementById('vtx-display').textContent = '—, —, — mm'
+    document.getElementById('vtx-display-lh').textContent = '—, —, — mm'
+    document.getElementById('vtx-display-rh').textContent = '—, —, — mm'
     document.getElementById('pos-display').textContent = ''
     resetPivot(nvLhL); resetPivot(nvRhL); resetPivot(nvAsym)
     for (const chart of [chartLH, chartRH, chartAsym]) {
@@ -1909,7 +1982,15 @@ async function selectVertex(vertIdx, nvInst) {
   }
 
   setProfiles(meanStd(rowsOf(lhMat)), meanStd(rowsOf(rhMat)), meanStd(rowsOf(asymMat)), ringSet.length, lhArea, rhArea, normStat)
-  document.getElementById('vtx-display').textContent = `${vx.toFixed(1)}, ${vy.toFixed(1)}, ${vz.toFixed(1)} mm`
+  // Both hemispheres' world coordinates for this vertex index, regardless of
+  // which surface panel was actually clicked — the ico6_sym template shares
+  // vertex indices across LH/RH, but the two hemispheres have distinct (mirror-
+  // asymmetric) geometry, so their mm coordinates differ and both are worth showing.
+  const fmtMm = (mesh, i) => mesh?.pts
+    ? `${mesh.pts[i*3].toFixed(1)}, ${mesh.pts[i*3+1].toFixed(1)}, ${mesh.pts[i*3+2].toFixed(1)} mm`
+    : '—, —, — mm'
+  document.getElementById('vtx-display-lh').textContent = fmtMm(lhMesh, vertIdx)
+  document.getElementById('vtx-display-rh').textContent = fmtMm(rhMesh, vertIdx)
   document.getElementById('vtxInput').value = vertIdx
 
   // Multivariate panels fetch independently so the profiles above render
