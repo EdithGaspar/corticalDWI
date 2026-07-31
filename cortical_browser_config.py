@@ -24,4 +24,4 @@ TEMPLATE = 'ico6_sym'
 # dwi/csd_fixels_singletissue/ are found too).
 # If a subject is missing a metric, the browser will display a warning and skip it.
 METRICS = ['fa', 'md', 'ad', 'rd', 'cl', 'cp', 'cs', 'afd-par', 'afd-perp', 'mk', 'ak', 'rk',
-           'T1w_proc', 'flair_proc', 'T1w_proc_grad']
+           'T1w_proc', 'flair_proc', 'T1w_proc_grad' 'T1_over_FLAIR']
