@@ -50,7 +50,7 @@ brainmasknii_flairspace=${tmpDir}/brainmasknii_flairspace.nii
 asegnii_flairspace=${tmpDir}/aseg_flairspace.nii
 
 my_do_cmd mrconvert $t1 $t1nii
-my_do_cmd mrconvert $brainmask $brainmasknii
+my_do_cmd mrcalc $brainmask 0 -gt $brainmasknii
 my_do_cmd mrconvert $aseg $asegnii
 my_do_cmd antsIntroduction.sh -d 3 \
   -i $flair \
@@ -133,6 +133,20 @@ else
   echolor red "[ERROR] Processing FLAIR finished with error and did not produce output file."
 fi
 
+
+echolor green "[INFO] Computing T1/FLAIR."
+t1_proc=${SUBJECTS_DIR}/${sID}/mri/T1w_proc.nii.gz
+if [ ! -f $t1_proc ]
+then
+  echolor red "[ERROR] File does not exist: $t1_proc"
+else
+  my_do_cmd mrcalc \
+    $t1_proc \
+    $flair_proc \
+    -div \
+    ${SUBJECTS_DIR}/${sID}/mri/T1_over_FLAIR.nii.gz
+
+fi
 
 
 rm -fR $tmpDir
