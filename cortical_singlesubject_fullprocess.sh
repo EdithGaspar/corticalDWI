@@ -1,78 +1,76 @@
 #!/bin/bash
 
-###  SOURCE THIS FILE TO RUN THE FULL CORTICAL DWI PIPELINE FOR A SINGLE SUBJECT
-###  Do not run it as a script!!!
-
-#### Modify this ###############################3
-# Subject data
-subjid=sub-73676
-bids_dir=/misc/nyquist/danielacoutino/glaucoma/bids
-subjects_dir=/misc/sherrington/lconcha/TMP/glaucoma/fs_glaucoma
-# Paths to tools needed
-mrtrix_modules_dir=/misc/sherrington/lconcha/code/inb_mrtrix_modules/bin
-corticalDWI_dir=/misc/sherrington/lconcha/code/corticalDWI
-export CORTICAL_DWI_DIR=${corticalDWI_dir}
-inb_tools_dir=/misc/sherrington/lconcha/code/inb_tools
-#### Parameters
-target_type=fsLR-32k
-step_size="0.1"
-nsteps=100
-tck_step_size=0.5
-target_type=fsLR-32k
-csd_fixel_dir=csd_fixels_singletissue
-angle=45
-nDepths=30
-template=/misc/sherrington/lconcha/code/corticalDWI/test_cortical_mult-stats_per_region_template.txt
-#### Do not modify below this line unless you know what you are doing
+# Make sure that the following environment variables are set:
+# module load freesurfer/8.1 mrtrix/3.0.4 workbench_con/2.0.1 ANTs/2.4.4 mrds/1.2.0
+# SUBJECTS_DIR: path to the freesurfer subjects directory
+#  path_add /misc/lauterbur2/lconcha/code/corticalDWI/
+#  path_add /misc/lauterbur2/lconcha/code/inb_mrtrix_modules/bin
+#  path_add /misc/lauterbur2/lconcha/code/inb_mrtrix_modules/scripts
+#
+# Make sure you have a configuration file named $SUBJECTS_DIR/corticalDWI_params.conf
 
 
 
-## Check that we have enough power (mostly for syntseg)
-minRAM=16 # in GB
-RAM=$(free -t --giga | awk '{print $2}' |  head -n 2 | tail -n 1)
-if [ $RAM -lt $minRAM ]; then
-  echolor red "[ERROR] Not enough RAM available. At least $minRAM GB is required."
-  sleep 100
+status=$(cortical_check_environment.sh)
+
+if [ $status -eq 0 ]; then
+  echolor red "[ERROR] Environment check failed. Please fix the issues above and try again."
+  exit 2
+fi
+
+if [ $# -lt 1 ]; then
+  echolor red "[ERROR] Not enough arguments"
+  echolor red "Usage: $(basename $0) <subjID>"
+  exit 2
+fi
+
+subjid=$1
+if [ ! -d ${SUBJECTS_DIR}/${subjid} ]; then
+  echolor red "[ERROR] Subject $subjid does not exist: ${SUBJECTS_DIR}/${subjid}"
+  exit 2
 fi
 
 
-#exit 2
 
-# Prepare the environment
-module load freesurfer/7.3.2 mrtrix/3.0.4 ANTs/2.4.4 workbench_con/2.0.1
-export SUBJECTS_DIR=${subjects_dir}; # always do this _after_ loading freesurfer
-anaconda_on; # Remove this if you always have anaconda activated (I don't)
-conda activate micapipe
-export PATH=${mrtrix_modules_dir}:${corticalDWI_dir}:${inb_tools_dir}:$PATH
+echolor green "[INFO] Environment check passed. Start processing..."
+echolor green "[INFO] SUBJECTS_DIR is set to: $SUBJECTS_DIR"
+echolor green "[INFO] Using configuration file: $SUBJECTS_DIR/corticalDWI_params.conf"
+echolor green "[INFO] Will process the following subject: $subjid"
 
 
-
-#### Start the pipeline
-cortical_add_dwi_to_freesurfer.sh $subjid $bids_dir
+date
+hostname
+# --- Begin --------------------------------------
+# Prepare streamlines
 cortical_compute_laplacian.sh $subjid
-for hemi in lh rh; do
-  for surf_type in white pial; do
-    cortical_resample_surface.sh $subjid $hemi $surf_type $target_type
-  done
-done
-
-for hemi in lh rh; do
-  cortical_compute_streamlines.sh $subjid $hemi $target_type $nsteps $step_size
-done
-
+cortical_resample_surface_ico6_sym.sh $subjid
+cortical_compute_streamlines.sh $subjid
 cortical_register_t1_to_dwi.sh $subjid
+cortical_warp_tck_to_dwi.sh $subjid
 
-for hemi in lh rh; do
-  cortical_warp_tck_to_dwi.sh $subjid $hemi $target_type $tck_step_size
-done
+# DTI
+cortical_DTI.sh $subjid
+cortical_tcksample_dti.sh $subjid
 
-cortical_CSD.sh $subjid
-#cortical_MRDS.sh $subjid; # Uncomment this if you want to run MRDS 
-cortical_tcksample_dti.sh $subjid $nDepths
-cortical_tcksamplefixels_afd.sh $subjid $csd_fixel_dir $angle $nDepths $target_type
+# CSD
+cortical_individual_response_CSD.sh $subjid
+#cortical_average_response.sh; # this is a step that needs to run once all subjects had cortical_individual_response_CSD.sh run, to create the average response function
+cortical_compute_fod_CSD.sh $subjid
+cortical_tcksamplefixels_afd.sh $subjid
 
-for hemi in rh lh; do 
-  cortical_separate_streamlines_by_aparc.sh $subjid $hemi $target_type
-done
+# MRDS
+cortical_MRDS.sh $subjid
+cortical_tcksamplefixels_mrds.sh $subjid
 
-cortical_multi-stats_per_region.sh -t $template $subjid $target_type
+# DKI
+cortical_DKI.sh $subjid
+cortical_tcksample_dki.sh $subjid
+
+# Structural imaging
+cortical_proc_t1.sh $subjid
+cortical_proc_FLAIR.sh $subjid
+cortical_tcksample_mri.sh $subjid
+
+# --- END --------------------------------------
+date
+
