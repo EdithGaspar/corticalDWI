@@ -6,4 +6,7 @@ Functions and scripts not included here can be found at https://github.com/lconc
 Please note that this pipeline uses a modified version of mrtrix, which should be [downloaded](https://github.com/lconcha/mrtrix3) and compiled first.
 
 
+## Tutorial
+Please see [here](./tutorial.md).
+
 ![cover](images/cover.png)

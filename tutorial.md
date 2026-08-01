@@ -12,6 +12,7 @@ This pipeline includes several tools scattered around many different software su
 * [workbench](https://www.humanconnectome.org/software/get-connectome-workbench)
 * [inb_tools](https://github.com/lconcha/inb_tools) (a collection of command-line tools used at our Institute).
 * Custom-made [mrtrix modules](https://github.com/lconcha/inb_mrtrix_modules).
+* mrds (ask Ricardo Coronado for it)
 
 ## Data
 High-resolution, high-quality, multi-shell DWIs are needed. The very first steps of the pipeline assume the data is organized in BIDS format, but this is just a formality, as the pipeline is not a bona fide bids app. Data should be pre-processed and inside the `derivatives/` directory. Pre-processing of DWIs can be done with mrtrix's `dwifslpreproc`, but we love the denoiser in [Designerv2.](https://nyu-diffusionmri.github.io/DESIGNER-v2/)
@@ -31,7 +32,7 @@ Create the directory where freesurfer outputs will be stored.  **All outputs fro
 In our cluster this is easy:
 
 ```bash
-module load freesurfer/7.3.2
+module load freesurfer/8.1.0
 export SUBJECTS_DIR=/misc/sherrington/lconcha/TMP/glaucoma/fs_glaucoma
 ```
 ## Run freesurfer
@@ -73,7 +74,7 @@ conda env create -f corticalDWI.yml
 then
 
 ```bash
-module load freesurfer/7.3.2 ANTs/ workbench_con/
+module load freesurfer/8.1.0 ANTs/2.4.4 workbench_con/2.0.1 mrtrix/3.0.4 mrds/1.2.0
 export SUBJECTS_DIR=/misc/sherrington/lconcha/TMP/glaucoma/fs_glaucoma; # do not forget to set this after any time you load the freesurfer module. We had already loaded it, it is here just as a reminder that the pipeline works well on v7.3.2
 conda activate corticalDWI  # crucial to do after module load to get the correct python in path
 ```
@@ -92,31 +93,52 @@ This relies on a well-organized bids directory with the pre-processed dwi file. 
 This creates a `dwi/` folder inside the `$SUBJECTS_DIR/$subjid` directory:
 ```init
 sub-79864/dwi
-├── ad.nii.gz
-├── b0.nii.gz
-├── dt.nii.gz
 ├── dwi.bval
 ├── dwi.bvec
 ├── dwi.nii.gz
 ├── dwi.scheme
-├── fa.nii.gz
 ├── mask.nii.gz
-├── md.nii.gz
-├── rd.nii.gz
-└── v1.nii.gz
 ```
 
-Check your newly-created DTI maps:
+
+
+# Run the CorticalDWI pipeline!
+
+## Prepare configuration file
+There should be a configuration file in you `$SUBJECTS_DIR` folder. All scripts will gather the default parameters from it. The majority of scripts are still callable with arguments, but if you want a cohesive analysis, this is a good way to do it. You can copy the [sample configuration file](./corticalDWI_params.conf).
+
+
+## RUN IT NOW, stop talking (tl;dr) :
+For each subject, simply run:
 ```bash
- mrview $SUBJECTS_DIR/$subjid/dwi/{v1,fa,b0,md}.nii.gz
+cortical_singlesubject_fullprocess.sh $subjid
+
 ```
 
-![DTI-maps](images/dti_maps.png)
+You can check the status of the pipeline with:
+```bash
+cortical_status.sh
+```
+which should provide something like...
+```
+SUBJECT           Lapl    Sres    Str     Reg     Wtk     DTI     sDTI    CSD     sCSD    MRDS    sMRDS   DKI     T1      FLAIR 
+----------------------------------------------------------------------------------------------------------------------------------------
+sub-Mcd00202      ✓       ✓       ✓       ✓       ✓       ✗       RL      ✗       RL      ✗       RL      ✓       ✗       ✗       (8/19)
+sub-Mcd004        ✓       ✓       ✓       ✓       ✓       ✓       ✓       ✓       ✓       ✓       RL      ✓       ✓       ✓       (17/19)
+sub-Mcd005        ✓       ✓       ✓       ✓       ✓       ✓       RL      ✓       RL      ✓       ✓       ✓       ✓       ✓       (15/19)
+sub-Mcd006        ✓       ✓       ✓       ✓       ✓       ✓       ✓       ✓       ✓       ✓       RL      ✓       ✓       ✓       (17/19)
+sub-Mcd007        ✓       ✓       ✓       ✓       ✓       ✓       ✓       ✓       ✓       ✓       ✓       ✓       ✓       ✗       (18/19)
+sub-Mcd008        ✓       ✓       ✓       ✓       ✓       ✗       RL      ✗       RL      ✗       RL      ✓       ✗       ✗       (8/19)
+sub-Mcd009        ✓       ✓       ✓       ✓       ✓       ✗       RL      ✗       RL      ✗       RL      ✓       ✗       ✗       (8/19)
+sub-Mcd010        ✓       ✓       ✓       ✓       ✓       ✗       RL      ✗       RL      ✗       RL      ✓       ✗       ✗       (8/19)
+sub-Mcd012        ✓       ✓       ✓       ✓       ✓       ✗       RL      ✗       RL      ✗       RL      ✓       ✗       ✗       (8/19)
+----------------------------------------------------------------------------------------------------------------------------------------
+Total: 107 / 171 steps done across 10 subject(s) (62%) for target type ico6_sym
+```
 
+## Details about pipeline
+If you want to know more aboout what goes on in the pipeline, keep reading.
 
-
-
-## Computing Laplacian field
 
 Define parameters
 
@@ -132,6 +154,7 @@ And get your Laplacians.
 cortical_compute_laplacian.sh $subjid
 ```
 
+
 Results are saved in the `mri` folder, since the Laplacian field is calculated in the T1 native space. Later on we will be able to move the laplacian streamlines to the dwi space. Check your result:
 
 ```bash
@@ -141,21 +164,15 @@ mrview ${SUBJECTS_DIR}/$subjid/mri/aparc+aseg.nii.gz -fixel.load $subjid/mri/lap
 ![laplacian vectors](images/laplacian_vectors.png)
 
 ## Resample surfaces
-This resamples the freesurfer's white and pial surfaces to whatever `$target_type` you want, typically `fsLR-32k`. It will also create surfaces with scanner coordinates, which we will use to compute the streamlines in the next step. Results are saved in the `surf` folder.
+This resamples the freesurfer's white and pial surfaces to whatever `$target_type` you want, typically `ico6_sym`. This is a custom-made surface based on a sixth order icosahedron. The beauty of this template is that it will allow us to have _very_ good vertex-wise inter-hemispheric correspondence per subject, improving asymmetry analyses.  It will also create surfaces with scanner coordinates, which we will use to compute the streamlines in the next step. Results are saved in the `surf` folder.
 ```bash
-for hemi in lh rh; do
-  for surf_type in white pial; do
-    cortical_resample_surface.sh $subjid $hemi $surf_type $target_type
-  done
-done
+cortical_resample_surface_ico6_sym.sh $subjid
 ```
 ## Compute streamlines
 ```bash
-for hemi in lh rh; do
-  cortical_compute_streamlines.sh $subjid $hemi $target_type $nsteps $step_size
-done
+cortical_compute_streamlines.sh $subjid
 ```
-When each of these finishes, you can see in cyan the suggested command to check the results in mrview. It should look something like this:
+When it finishes, you can see in cyan the suggested command to check the results in mrview. It should look something like this:
 
 ![laplacians](images/laplacian_streamlines.png)
 
@@ -172,9 +189,7 @@ The command itself will tell you how to check your results. Use the <kbd>PgUp</k
 ## Warp streamlines to DWI space
 Streamlines were created in t1 native space, because that is where the surfaces were generated. However, what we want to sample is in dwi space. Now, _we could_ transform all DWI-derived maps to t1 space and sample there, but that would be a hassle, since we would need to transform all vector-related stuff (fixels, principal diffusion directions, etc). So, instead we bring the t1-derived streamlines over to the dwi world.
 ```bash
-for hemi in lh rh; do
-  cortical_warp_tck_to_dwi.sh $subjid $hemi $target_type $tck_step_size
-done
+cortical_warp_tck_to_dwi.sh $subjid
 ```
 When the script finishes, it will tell you how to visualize the results, go ahead and check that the streamlines are truly in dwi space. This is crucial, or else we will sample some other trash!
 
@@ -183,10 +198,6 @@ When the script finishes, it will tell you how to visualize the results, go ahea
 
 ## Resample and truncate the streamlines
 To ensure correct sampling as a function of depth from the pial surface, we should ensure equidistant points between the vertices of each streamline according to our desired spatial sampling rate (step size). While we're at it, we truncate the streamlines after a certain depth. This will allow us to visualize only what we are truly sampling.
-
-```bash
-tckresample_and_truncate rh_fsLR-32k_laplace-wm-streamlines_dwispace.tck now.tck --step_size 0.5 --max_length 8
-```
 
 
 
@@ -230,48 +241,11 @@ We must have the custom-made mrtrix modules in our `$PATH`. They can be obtained
   * The fixel showing the largest dot product to the streamline segment is assigned as **parallel**.
   * **Perpendicular** can be defined in two ways: either the most perpendicular (i.e., lowest dot product), or the average of all fixels except the one defined as parallel. Both are supplied as results.
 
-:information_source: Some DWI metrics are not fixel-based (e.g., DTI metrics), and therefore do not specify par or perp.
+## Other DWi models
+Some DWI metrics are not fixel-based (e.g., DTI, DKI metrics), and therefore do not specify par or perp.
 
 ```bash
-fixel_dir=csd_fixels_singletissue
-angle=45
-nDepths=30
 cortical_tcksample_dti.sh $subjid $nDepths
-cortical_tcksamplefixels_afd.sh $subjid $fixel_dir $angle $nDepths $target_type
-```
-
-:warning: The variable `nDepths` represents how deep we will sample, **starting from the pial surface**. This is given in number of steps in the tck file. But, since we already know that `tck_step_size=0.5`, we can obtain how deep we will go, in this case `0.5 mm * 30 = 6 mm`.
-
-
-
-## Computing summary metrics per cortical region
-
-### Separate the streamlines
-
-```bash
-for hemi in rh lh; do 
-  cortical_separate_streamlines_by_aparc.sh $subjid $hemi $target_type
-done
-```
-
-### Derive summary metrics
-We will use a wrapper script that will obtain several diffusion metrics per region. In this tutorial we are dealing only with DTI and CSD_single_tissue. Thus, I created a template file from which we will know what to sample.
-```bash
-template=/misc/sherrington/lconcha/code/corticalDWI/test_cortical_mult-stats_per_region_template.txt
-cortical_multi-stats_per_region.sh -t $template $subjid $target_type 
-```
-
-The `$template` contains: 
-```init
-# file_name                                             metric_name
-# CSD_singletissue
-dwi/csd_fixels_singletissue/HEMI_TARGET_afd-par.txt     afd-par
-dwi/csd_fixels_singletissue/HEMI_TARGET_afd-perp.txt    afd-perp
-#
-# DTI
-dwi/HEMI_TARGET_fa.txt                                  fa
-dwi/HEMI_TARGET_md.txt                                  md
-dwi/HEMI_TARGET_ad.txt                                  ad
-dwi/HEMI_TARGET_rd.txt                                  rd
+cortical_tcksample_dki.sh $subjid
 ```
 
