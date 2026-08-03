@@ -62,7 +62,7 @@ do
   tck=${SUBJECTS_DIR}/${subjID}/dwi/${hemi}_${target_type}_laplace-wm-streamlines_dwispace.tck
   for v in FA MD COMP_SIZE
   do
-      this_f=${fixel_dir}/MRDS_DIFF_FTest_${v}.mif
+      this_f=${fixel_dir}/MRDS_Diff_FTest_${v}.mif
       for f in $tck $this_f
       do
       if [ ! -f $f ]

@@ -193,7 +193,7 @@ then
         ${outbase}_MRDS_Diff_FTest_PDDs_CARTESIAN_scaled-by-${v}.nii.gz \
         $tmpDir
     cp -v ${tmpDir}/amplitudes.mif \
-        ${outdir}/mrds_fixels/MRDS_DIFF_FTest_${v}.mif
+        ${outdir}/mrds_fixels/MRDS_Diff_FTest_${v}.mif
     cp -v ${tmpDir}/{directions,index}.mif ${outdir}/mrds_fixels/
     my_do_cmd rm -fR $tmpDir
     done
