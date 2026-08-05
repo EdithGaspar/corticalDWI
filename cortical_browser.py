@@ -2346,13 +2346,14 @@ function makeChart(id, color, label, fill = false) {
         label: 'Normative', data: [], borderColor: '#ffffff',
         pointRadius: 0, tension: 0.3, fill: false, parsing: false, borderWidth: 1.5
       },
-      { // normative +SD band
-        data: [], borderColor: '#ffffff', borderDash: [5,4], borderWidth: 1,
+      { // normative +SD band — invisible; just the fill's upper boundary
+        data: [], borderColor: 'transparent', borderWidth: 0,
         pointRadius: 0, tension: 0.3, fill: false, parsing: false, _isSd: true
       },
-      { // normative -SD band
-        data: [], borderColor: '#ffffff', borderDash: [5,4], borderWidth: 1,
-        pointRadius: 0, tension: 0.3, fill: false, parsing: false, _isSd: true
+      { // normative -SD band — invisible line; shaded gray fill up to +SD
+        data: [], borderColor: 'transparent', borderWidth: 0,
+        backgroundColor: 'rgba(160,160,160,0.30)',
+        pointRadius: 0, tension: 0.3, fill: 4, parsing: false, _isSd: true
       },
     ]},
     options: {
