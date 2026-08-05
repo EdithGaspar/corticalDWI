@@ -136,6 +136,14 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
   cursor: pointer; padding: 0; opacity: 0.45;
 }
 .maxbtn:hover { opacity: 1; color: var(--accent-yellow); border-color: var(--accent-yellow); }
+.svgbtn {
+  position: absolute; top: 3px; right: 24px; z-index: 15;
+  height: 18px; line-height: 16px; padding: 0 5px;
+  font-size: 10px; color: #cfcfcf;
+  background: rgba(0,0,0,0.5); border: 1px solid #555555; border-radius: 3px;
+  cursor: pointer; opacity: 0.45;
+}
+.svgbtn:hover { opacity: 1; color: var(--accent-yellow); border-color: var(--accent-yellow); }
 .plot-cell { display: flex; flex-direction: column; padding: 20px 5px 4px; }
 .chart-wrap { position: relative; flex: 1; min-height: 0; background: #242424; }
 .cbar {
@@ -349,14 +357,17 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
   <!-- Row 3: depth-profile charts -->
   <div class="cell plot-cell grow3">
     <span class="clabel">LH depth profile</span>
+    <button class="svgbtn" id="svgBtnLH" title="Save this chart as a vector SVG file">SVG</button>
     <div class="chart-wrap"><canvas id="chart-lh"></canvas></div>
   </div>
   <div class="cell plot-cell grow3">
     <span class="clabel">RH depth profile</span>
+    <button class="svgbtn" id="svgBtnRH" title="Save this chart as a vector SVG file">SVG</button>
     <div class="chart-wrap"><canvas id="chart-rh"></canvas></div>
   </div>
   <div class="cell plot-cell grow3">
     <span class="clabel">Asymmetry profile</span>
+    <button class="svgbtn" id="svgBtnAsym" title="Save this chart as a vector SVG file">SVG</button>
     <div class="chart-wrap"><canvas id="chart-asym"></canvas></div>
   </div>
 
@@ -2388,9 +2399,146 @@ function setDepthFromChart(chart, pixelX) {
   setDepth(d)
 }
 
+// ── vector (SVG) export of a depth-profile chart ──────────────────────────────
+// Chart.js only draws to <canvas> (raster), so this rebuilds the same picture
+// as an SVG by walking the chart's already-computed scales/datasets rather
+// than recording canvas calls — simpler and exact for the plain line/fill
+// charts used here (no gradients, images, or curved beziers beyond the
+// 'tension' the datasets already use, which we render as straight segments —
+// close enough at the sampling density of a depth profile).
+function chartToSvgString(chart, background = '#242424') {
+  const W = chart.width, H = chart.height
+  const xScale = chart.scales.x, yScale = chart.scales.y
+  const gridColor = '#303030', textColor = PLOT_TEXT
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  // Split "rgba(r,g,b,a)" into a plain rgb() fill + a separate fill-opacity
+  // attribute — some SVG renderers (older Inkscape, various PDF converters)
+  // ignore the alpha channel inside a fill="rgba(...)" value and render it
+  // fully opaque, so the alpha needs to travel as its own attribute instead.
+  const splitAlpha = colorStr => {
+    const m = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\)/.exec(colorStr || '')
+    if (!m) return { rgb: colorStr, a: 1 }
+    return { rgb: `rgb(${m[1]},${m[2]},${m[3]})`, a: m[4] !== undefined ? parseFloat(m[4]) : 1 }
+  }
+  const parts = []
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="sans-serif">`)
+  if (background) parts.push(`<rect x="0" y="0" width="${W}" height="${H}" fill="${background}"/>`)
+
+  // Gridlines
+  parts.push(`<g stroke="${gridColor}" stroke-width="1">`)
+  for (const t of xScale.ticks) {
+    const px = xScale.getPixelForValue(t.value)
+    parts.push(`<line x1="${px}" y1="${yScale.top}" x2="${px}" y2="${yScale.bottom}"/>`)
+  }
+  for (const t of yScale.ticks) {
+    const py = yScale.getPixelForValue(t.value)
+    parts.push(`<line x1="${xScale.left}" y1="${py}" x2="${xScale.right}" y2="${py}"/>`)
+  }
+  parts.push(`</g>`)
+
+  // Tick labels
+  parts.push(`<g fill="${textColor}" font-size="10">`)
+  for (const t of xScale.ticks) {
+    const px = xScale.getPixelForValue(t.value)
+    const label = t.label !== undefined ? t.label : t.value.toFixed(1)
+    parts.push(`<text x="${px}" y="${yScale.bottom + 14}" text-anchor="middle">${esc(label)}</text>`)
+  }
+  for (const t of yScale.ticks) {
+    const py = yScale.getPixelForValue(t.value)
+    const label = t.label !== undefined ? t.label : String(t.value)
+    parts.push(`<text x="${xScale.left - 6}" y="${py + 3}" text-anchor="end">${esc(label)}</text>`)
+  }
+  parts.push(`</g>`)
+
+  // Axis title
+  const xTitle = chart.options?.scales?.x?.title?.text
+  if (xTitle) {
+    parts.push(`<text x="${(xScale.left + xScale.right) / 2}" y="${H - 4}" ` +
+      `fill="${textColor}" font-size="11" text-anchor="middle">${esc(xTitle)}</text>`)
+  }
+
+  // Datasets: fills first (so mean/data lines draw on top), then strokes.
+  const pixelPoints = ds => ds.data.map(p =>
+    (p == null || p.y == null) ? null : { x: xScale.getPixelForValue(p.x), y: yScale.getPixelForValue(p.y) })
+
+  chart.data.datasets.forEach((ds, i) => {
+    if (!ds.data?.length || chart.getDatasetMeta(i).hidden) return
+    if (typeof ds.fill !== 'number') return
+    const pts = pixelPoints(ds)
+    const targetPts = pixelPoints(chart.data.datasets[ds.fill])
+    let run = []
+    const flush = () => {
+      if (run.length > 1) {
+        const fwd = run.map(k => `${pts[k].x},${pts[k].y}`).join(' L ')
+        const bwd = run.slice().reverse().map(k => `${targetPts[k].x},${targetPts[k].y}`).join(' L ')
+        const { rgb, a } = splitAlpha(ds.backgroundColor)
+        parts.push(`<path d="M ${fwd} L ${bwd} Z" fill="${rgb}" fill-opacity="${a}" stroke="none"/>`)
+      }
+      run = []
+    }
+    pts.forEach((p, k) => { if (p && targetPts[k]) run.push(k); else flush() })
+    flush()
+  })
+
+  chart.data.datasets.forEach((ds, i) => {
+    if (!ds.data?.length || chart.getDatasetMeta(i).hidden) return
+    if (!ds.borderColor || ds.borderColor === 'transparent' || ds.borderWidth === 0) return
+    const pts = pixelPoints(ds)
+    let d = '', drawing = false
+    for (const p of pts) {
+      if (!p) { drawing = false; continue }
+      d += (drawing ? ' L ' : 'M ') + `${p.x},${p.y}`
+      drawing = true
+    }
+    if (!d) return
+    const dash = (ds.borderDash && ds.borderDash.length) ? ` stroke-dasharray="${ds.borderDash.join(',')}"` : ''
+    parts.push(`<path d="${d}" fill="none" stroke="${ds.borderColor}" stroke-width="${ds.borderWidth ?? 1}"${dash}/>`)
+  })
+
+  // Legend (vertical list, top-left of the plot area — simpler and more
+  // robust than reproducing Chart.js's own flow-wrapped horizontal legend).
+  const legendItems = chart.legend?.legendItems || []
+  if (legendItems.length) {
+    parts.push(`<g font-size="10">`)
+    legendItems.forEach((item, k) => {
+      const ly = yScale.top + 12 + k * 14
+      parts.push(`<rect x="${xScale.left + 8}" y="${ly - 8}" width="10" height="10" ` +
+        `fill="${item.fillStyle}" stroke="${item.strokeStyle}"/>`)
+      parts.push(`<text x="${xScale.left + 22}" y="${ly}" fill="${textColor}">${esc(item.text)}</text>`)
+    })
+    parts.push(`</g>`)
+  }
+
+  parts.push(`</svg>`)
+  return parts.join('\n')
+}
+
+function downloadChartSvg(chart, filename) {
+  const svg  = chartToSvgString(chart)
+  const blob = new Blob([svg], { type: 'image/svg+xml' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 chartLH   = makeChart('chart-lh',   LH_COLOR, 'LH')
 chartRH   = makeChart('chart-rh',   RH_COLOR, 'RH')
 chartAsym = makeChart('chart-asym', '#8af5a6', 'Asymmetry', true)
+
+for (const [btnId, chart, suffix] of [
+  ['svgBtnLH',   chartLH,   'lh_depth_profile'],
+  ['svgBtnRH',   chartRH,   'rh_depth_profile'],
+  ['svgBtnAsym', chartAsym, 'asymmetry_profile'],
+]) {
+  document.getElementById(btnId).addEventListener('click', e => {
+    e.stopPropagation()
+    const subj = document.querySelector('.subj')?.textContent || 'subject'
+    downloadChartSvg(chart, `${subj}_${currentMetric}_${suffix}.svg`)
+  })
+}
 applyAsymYLimits()
 
 // ── multivariate explorer charts (row 4) ─────────────────────────────────────
