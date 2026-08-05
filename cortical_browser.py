@@ -895,35 +895,32 @@ async function ensureNormativeMatrix(kind, metric, stat) {
 async function normativeRingStat(kind, metric, ringSet) {
   const info = NORMATIVE[metric]?.[kind]
   if (!info) return null
-  const nd = info.n_depths
-  const [meanMat, stdMat] = await Promise.all([
-    ensureNormativeMatrix(kind, metric, 'mean'),
-    ensureNormativeMatrix(kind, metric, 'std'),
-  ])
-  // Ring-average the precomputed per-vertex cohort mean; combine per-vertex
-  // SDs by averaging variances (a "pooled SD" approximation — the true
-  // per-ring SD would need the raw per-subject stack, not just mean/std).
-  // The cohort mean/std files carry NaN where no subject reached a vertex/depth
-  // (nanmean in materialize_normative), so skip those rather than poisoning the
-  // ring average.
-  const mean = new Array(nd).fill(0)
-  const variance = new Array(nd).fill(0)
-  const cnt = new Array(nd).fill(0)
-  for (const vi of ringSet) {
+
+  // A lone vertex needs no cross-vertex aggregation, so the precomputed
+  // per-vertex cohort mean/std is already exact — serve it directly rather
+  // than round-tripping to the server.
+  if (ringSet.length <= 1) {
+    const nd = info.n_depths
+    const vi = ringSet[0]
+    const [meanMat, stdMat] = await Promise.all([
+      ensureNormativeMatrix(kind, metric, 'mean'),
+      ensureNormativeMatrix(kind, metric, 'std'),
+    ])
+    const mean = new Array(nd), sd = new Array(nd)
     for (let d = 0; d < nd; d++) {
-      const mv = meanMat[vi*nd+d]
-      if (!Number.isFinite(mv)) continue
-      const sv = stdMat[vi*nd+d]
-      mean[d]     += mv
-      variance[d] += Number.isFinite(sv) ? sv*sv : 0
-      cnt[d]++
+      mean[d] = meanMat[vi*nd+d]
+      sd[d]   = stdMat[vi*nd+d]
     }
+    return { mean, sd, n: NORMATIVE[metric].n_subjects }
   }
-  for (let d = 0; d < nd; d++) {
-    if (cnt[d]) { mean[d] /= cnt[d]; variance[d] /= cnt[d] }
-    else        { mean[d] = NaN;    variance[d] = NaN }
-  }
-  return { mean, sd: variance.map(Math.sqrt), n: NORMATIVE[metric].n_subjects }
+
+  // >1 vertex: the SD of each control subject's own vertex-averaged profile
+  // is NOT the average of the per-vertex cohort SDs (mean-of-SDs != SD-of-
+  // means), so this needs the raw per-subject stack — computed fresh from
+  // the cohort h5 file on the server (see compute_normative_ring_stat).
+  const r = await fetch(`/normative_ring?metric=${metric}&kind=${kind}&vertices=${ringSet.join(',')}`)
+  if (!r.ok) return null
+  return r.json()
 }
 
 async function loadMatrices(metric) {
@@ -3522,6 +3519,51 @@ def materialize_normative(subjects_dir, metric, out_dir, template=TEMPLATE):
     return file_entries
 
 
+def compute_normative_ring_stat(subjects_dir, metric, kind, vertices, template=TEMPLATE):
+    """Correct cohort mean/SD for a set of >1 vertices: average each control
+    subject's values across the selected vertices first, then take mean/SD
+    across subjects. This is NOT the same as averaging the precomputed
+    per-vertex normative_*_std.f32 maps together (mean-of-SDs != SD-of-means)
+    — that pooled-variance shortcut is what normativeRingStat() used to do
+    for rings, and only the mean of the two approaches happens to agree.
+    Reads the raw per-subject stack straight from the cohort h5 file, so it's
+    only worth calling for >1 vertex; a lone vertex needs no aggregation and
+    the precomputed per-vertex file is exact and cheaper to serve."""
+    h5_path = os.path.join(subjects_dir, 'templates', 'normative', f'{template}_multivariate.h5')
+    if not os.path.isfile(h5_path):
+        return None
+    with h5py.File(h5_path, 'r') as h5f:
+        cohort_metrics = list(h5f['metrics'].asstr()[:])
+        if metric not in cohort_metrics:
+            return None
+        idx = cohort_metrics.index(metric)
+        n_cohort_verts = h5f['lh_M'].shape[0]
+        verts = sorted({int(v) for v in vertices if 0 <= int(v) < n_cohort_verts})
+        if not verts:
+            return None
+
+        with np.errstate(invalid='ignore'), warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=RuntimeWarning)
+            if kind == 'asym':
+                lh_stack = np.asarray(h5f['lh_M'][verts])[:, :, :, idx].astype(np.float64)  # (nV, nDL, nSub)
+                rh_stack = np.asarray(h5f['rh_M'][verts])[:, :, :, idx].astype(np.float64)  # (nV, nDR, nSub)
+                common_d = min(lh_stack.shape[1], rh_stack.shape[1])
+                stack = compute_asym_matrix(lh_stack[:, :common_d, :], rh_stack[:, :common_d, :]).astype(np.float64)
+            elif kind in ('lh', 'rh'):
+                stack = np.asarray(h5f[f'{kind}_M'][verts])[:, :, :, idx].astype(np.float64)  # (nV, nD, nSub)
+            else:
+                return None
+
+            # Average within each control subject across the selected vertices...
+            subj_vec = np.nanmean(stack, axis=0)   # (nDepths, nSubjects)
+            # ...then take mean/SD across subjects.
+            mean = np.nanmean(subj_vec, axis=1)
+            sd   = np.nanstd(subj_vec, axis=1)
+            n    = np.sum(~np.isnan(subj_vec), axis=1)
+
+    return {'mean': _jsonable(mean), 'sd': _jsonable(sd), 'n': [int(x) for x in n]}
+
+
 # ── multivariate (Mahalanobis + z-score) explorer ──────────────────────────────
 # Port of cortical_subject_mahal_by_depth.m: for one vertex, at each depth,
 # compare the subject's per-metric vector against the cohort's multivariate
@@ -3792,6 +3834,9 @@ def make_handler(html_bytes, file_map, overlay_arrays, materialized, out_dir,
             if path == '/mahal':
                 self._serve_mahal()
                 return
+            if path == '/normative_ring':
+                self._serve_normative_ring()
+                return
             if path not in file_map:
                 self._materialize_if_needed(path)
             if path in file_map:
@@ -3859,6 +3904,39 @@ def make_handler(html_bytes, file_map, overlay_arrays, materialized, out_dir,
                 return
             if payload is None:
                 self._reply(404, 'text/plain', b'no multivariate data\n')
+                return
+            self._reply(200, 'application/json', json.dumps(payload).encode('utf-8'))
+
+        def _serve_normative_ring(self):
+            """On-demand correct cohort mean/SD for >1 selected vertices (see
+            compute_normative_ring_stat) — computed fresh from the cohort h5's
+            raw per-subject stack, since the precomputed per-vertex
+            normative_*_std.f32 maps can't be combined into a ring SD by simple
+            averaging."""
+            if not subjects_dir:
+                self._reply(404, 'text/plain', b'no cohort data\n')
+                return
+            qs = parse_qs(urlparse(self.path).query)
+            metric = qs.get('metric', [''])[0]
+            kind = qs.get('kind', [''])[0]
+            if not metric or kind not in ('lh', 'rh', 'asym'):
+                self._reply(400, 'text/plain', b'bad or missing metric/kind\n')
+                return
+            verts_arg = qs.get('vertices', [''])[0]
+            try:
+                verts = [int(v) for v in verts_arg.split(',') if v != '']
+            except (ValueError, TypeError):
+                verts = []
+            if not verts:
+                self._reply(400, 'text/plain', b'missing vertices\n')
+                return
+            try:
+                payload = compute_normative_ring_stat(subjects_dir, metric, kind, verts, template=template)
+            except Exception as exc:   # noqa: BLE001 — report, don't crash the server
+                self._reply(500, 'text/plain', f'normative_ring error: {exc}\n'.encode('utf-8'))
+                return
+            if payload is None:
+                self._reply(404, 'text/plain', b'no cohort data for metric\n')
                 return
             self._reply(200, 'application/json', json.dumps(payload).encode('utf-8'))
 
