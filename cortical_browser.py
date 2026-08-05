@@ -911,7 +911,7 @@ async function normativeRingStat(kind, metric, ringSet) {
       mean[d] = meanMat[vi*nd+d]
       sd[d]   = stdMat[vi*nd+d]
     }
-    return { mean, sd, n: NORMATIVE[metric].n_subjects }
+    return { mean, sd, n: new Array(nd).fill(NORMATIVE[metric].n_subjects) }
   }
 
   // >1 vertex: the SD of each control subject's own vertex-averaged profile
@@ -2641,7 +2641,7 @@ function setProfiles(lhStat, rhStat, asymStat, count, lhArea, rhArea, normStat) 
   ]
   for (const [chart, stat, area, norm] of entries) {
     let label = chart.baseLabel
-    if (count > 1) label += ` (n=${count})`
+    if (count > 1) label += ` (nVert=${count})`
     if (area != null) label += ` [${area.toFixed(1)} mm²]`
     chart.data.datasets[0].label = label
     chart.data.datasets[0].data  = toXY(stat.mean)
@@ -2654,7 +2654,7 @@ function setProfiles(lhStat, rhStat, asymStat, count, lhArea, rhArea, normStat) 
     }
 
     if (norm) {
-      chart.data.datasets[3].label = `Normative (N=${norm.n})`
+      chart.data.datasets[3].label = `Normative (nSubj=${Math.max(...norm.n)})`
       chart.data.datasets[3].data  = toXY(norm.mean)
       chart.data.datasets[4].data  = toXY(norm.mean.map((m,i) => m + norm.sd[i]))
       chart.data.datasets[5].data  = toXY(norm.mean.map((m,i) => m - norm.sd[i]))
