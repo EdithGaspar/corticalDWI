@@ -33,6 +33,7 @@ body {
 .space { color: #999; font-size: 10px; white-space: nowrap; }
 .subj { font-weight: bold; color: #f0f0f0; font-size: 12px; white-space: nowrap; }
 .glab { color: #d1d1d1; font-size: 10px; white-space: nowrap; }
+.loading-badge { color: var(--accent-yellow); font-size: 10px; font-style: italic; white-space: nowrap; }
 label { display: flex; align-items: center; gap: 3px; white-space: nowrap; color: #999; }
 select {
   background: #d9d9d9; color: #1a1a1a; border: 1px solid #4d4d4d;
@@ -282,7 +283,8 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
 
   <section class="ctl-group">
     <h3 class="ctl-h">Plots</h3>
-    <div class="ctl-row"><label><input type="checkbox" id="showNormativeChk" title="Fetch and overlay cohort normative mean ± SD (computed lazily on first use)"> Show normative</label></div>
+    <div class="ctl-row"><label><input type="checkbox" id="showNormativeChk" title="Fetch and overlay cohort normative mean ± SD (computed lazily on first use)"> Show normative</label>
+      <span id="normativeLoading" class="loading-badge" style="display:none">loading…</span></div>
     <div class="ctl-row">
       <label title="Max |z| shown on the radar and z-score bar panels">|z|≤ <input type="number" id="mvZlimInput" min="0.5" step="0.5" value="3"></label>
       <label title="Max Mahalanobis distance shown on the multivariate depth panel">Mahal≤ <input type="number" id="mvMahalInput" min="1" step="1" value="10"></label>
