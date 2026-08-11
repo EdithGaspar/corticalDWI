@@ -1267,12 +1267,12 @@ function setDataCLim(mn, mx) {
   refreshColorbars()
 }
 
-// Pin the Asymmetry plot's y-axis to the asym colormap limits so the plot and
-// the surface color scale share the same range.
-function applyAsymYLimits() {
+// Pin the Asymmetry plot's value axis (x) to the asym colormap limits so the
+// plot and the surface color scale share the same range.
+function applyAsymValueLimits() {
   if (!chartAsym) return
-  chartAsym.options.scales.y.min = currentAsymMin
-  chartAsym.options.scales.y.max = currentAsymMax
+  chartAsym.options.scales.x.min = currentAsymMin
+  chartAsym.options.scales.x.max = currentAsymMax
   chartAsym.update('none')
 }
 
@@ -1283,7 +1283,7 @@ function setAsymCLim(mn, mx) {
       nvAsym.setMeshLayerProperty(mesh.id, 0, 'cal_min', mn)
       nvAsym.setMeshLayerProperty(mesh.id, 0, 'cal_max', mx)
     }
-  applyAsymYLimits()
+  applyAsymValueLimits()
   refreshColorbars()
 }
 
@@ -1367,7 +1367,7 @@ function initClimInputs(info) {
   asymMaxEl.value = info.cal_max_asym.toFixed(4)
   currentClimMin = info.cal_min; currentClimMax = info.cal_max
   currentAsymMin = info.cal_min_asym; currentAsymMax = info.cal_max_asym
-  applyAsymYLimits()
+  applyAsymValueLimits()
   refreshColorbars()
 }
 
@@ -2368,22 +2368,23 @@ function makeChart(id, color, label, fill = false) {
       },
     ]},
     options: {
+      indexAxis: 'y',
       responsive: true, maintainAspectRatio: false, animation: false,
-      onClick: (evt, elements, chart) => setDepthFromChart(chart, evt.x),
+      onClick: (evt, elements, chart) => setDepthFromChart(chart, evt.y),
       plugins: {
         legend: { display: true, labels: { color: PLOT_TEXT, boxWidth: 10, font: {size:10},
           filter: (item, data) => !data.datasets[item.datasetIndex]?._isSd } },
         annotation: { annotations: { depthLine: {
-          type: 'line', xMin: 0, xMax: 0,
+          type: 'line', yMin: 0, yMax: 0,
           borderColor: ACCENT_YELLOW, borderWidth: 1.5, borderDash: [4,3]
         }}}
       },
       scales: {
-        x: { type:'linear',
+        x: { ticks: { color:PLOT_TEXT, maxTicksLimit:5 }, grid: { color:'#303030' } },
+        y: { type:'linear', reverse:true,
              title: { display:true, text:'Depth (mm)', color:PLOT_TEXT },
              ticks: { color:PLOT_TEXT, maxTicksLimit:8, callback: v => v.toFixed(1) },
-             grid:  { color:'#303030' } },
-        y: { ticks: { color:PLOT_TEXT, maxTicksLimit:5 }, grid: { color:'#303030' } }
+             grid:  { color:'#303030' } }
       }
     }
   })
@@ -2391,8 +2392,8 @@ function makeChart(id, color, label, fill = false) {
   return chart
 }
 
-function setDepthFromChart(chart, pixelX) {
-  const mm  = chart.scales.x.getValueForPixel(pixelX)
+function setDepthFromChart(chart, pixelY) {
+  const mm  = chart.scales.y.getValueForPixel(pixelY)
   const sl  = document.getElementById('depthSlider')
   const d   = Math.max(0, Math.min(+sl.max, Math.round(mm / STEP_MM)))
   sl.value  = d
@@ -2450,16 +2451,22 @@ function chartToSvgString(chart, background = '#242424') {
   }
   parts.push(`</g>`)
 
-  // Axis title
+  // Axis titles
   const xTitle = chart.options?.scales?.x?.title?.text
   if (xTitle) {
     parts.push(`<text x="${(xScale.left + xScale.right) / 2}" y="${H - 4}" ` +
       `fill="${textColor}" font-size="11" text-anchor="middle">${esc(xTitle)}</text>`)
   }
+  const yTitle = chart.options?.scales?.y?.title?.text
+  if (yTitle) {
+    const ty = (yScale.top + yScale.bottom) / 2
+    parts.push(`<text x="12" y="${ty}" fill="${textColor}" font-size="11" text-anchor="middle" ` +
+      `transform="rotate(-90 12 ${ty})">${esc(yTitle)}</text>`)
+  }
 
   // Datasets: fills first (so mean/data lines draw on top), then strokes.
   const pixelPoints = ds => ds.data.map(p =>
-    (p == null || p.y == null) ? null : { x: xScale.getPixelForValue(p.x), y: yScale.getPixelForValue(p.y) })
+    (p == null || p.x == null) ? null : { x: xScale.getPixelForValue(p.x), y: yScale.getPixelForValue(p.y) })
 
   chart.data.datasets.forEach((ds, i) => {
     if (!ds.data?.length || chart.getDatasetMeta(i).hidden) return
@@ -2539,7 +2546,7 @@ for (const [btnId, chart, suffix] of [
     downloadChartSvg(chart, `${subj}_${currentMetric}_${suffix}.svg`)
   })
 }
-applyAsymYLimits()
+applyAsymValueLimits()
 
 // ── multivariate explorer charts (row 4) ─────────────────────────────────────
 const mvTick = { color:PLOT_TEXT, font:{size:10} }
@@ -2566,20 +2573,21 @@ chartMahal = new Chart(document.getElementById('chart-mahal'), {
     ...mvSdBand(RH_COLOR),
   ]},
   options: {
+    indexAxis: 'y',
     responsive:true, maintainAspectRatio:false, animation:false,
-    onClick: (evt, els, chart) => setDepthFromChart(chart, evt.x),
+    onClick: (evt, els, chart) => setDepthFromChart(chart, evt.y),
     plugins: {
       legend: { display:true, labels:{ color:PLOT_TEXT, boxWidth:10, font:{size:10},
         filter:(item,data) => !data.datasets[item.datasetIndex]?._isSd } },
       annotation: { annotations: { depthLine: {
-        type:'line', xMin:0, xMax:0, borderColor:ACCENT_YELLOW, borderWidth:1.5, borderDash:[4,3]
+        type:'line', yMin:0, yMax:0, borderColor:ACCENT_YELLOW, borderWidth:1.5, borderDash:[4,3]
       }}}
     },
     scales: {
-      x: { type:'linear', title:{ display:true, text:'Depth (mm)', color:PLOT_TEXT },
-           ticks:{ ...mvTick, maxTicksLimit:8, callback:v => v.toFixed(1) }, grid:mvGrid },
-      y: { min:0, max:mvMahalLim, title:{ display:true, text:'Mahalanobis distance', color:PLOT_TEXT },
-           ticks:mvTick, grid:mvGrid }
+      x: { min:0, max:mvMahalLim, title:{ display:true, text:'Mahalanobis distance', color:PLOT_TEXT },
+           ticks:mvTick, grid:mvGrid },
+      y: { type:'linear', reverse:true, title:{ display:true, text:'Depth (mm)', color:PLOT_TEXT },
+           ticks:{ ...mvTick, maxTicksLimit:8, callback:v => v.toFixed(1) }, grid:mvGrid }
     }
   }
 })
@@ -2685,10 +2693,10 @@ const mvLabel = (base, n) => (n > 1 ? `${base} (n=${n})` : base)
 // Mahalanobis-by-depth: mean line per hemisphere plus dashed ±SD band across
 // the selected vertex + neighbor-ring set (the band appears only for n>1).
 function renderMahalChart(data) {
-  const toXY  = arr => arr.map((v,i) => ({ x: i*data.step_mm, y: (v == null ? null : v) }))
+  const toXY  = arr => arr.map((v,i) => ({ y: i*data.step_mm, x: (v == null ? null : v) }))
   const band  = (mean, sd, sign) => mean.map((m,i) => ({
-    x: i*data.step_mm,
-    y: (m == null || !sd || sd[i] == null) ? null : m + sign*sd[i]
+    y: i*data.step_mm,
+    x: (m == null || !sd || sd[i] == null) ? null : m + sign*sd[i]
   }))
   const setHemi = (base, hemi, name) => {
     chartMahal.data.datasets[base].data     = toXY(hemi.mahal)
@@ -2698,9 +2706,9 @@ function renderMahalChart(data) {
   }
   setHemi(0, data.lh, 'LH')
   setHemi(3, data.rh, 'RH')
-  chartMahal.options.scales.y.max = mvMahalLim
+  chartMahal.options.scales.x.max = mvMahalLim
   const ann = chartMahal.options.plugins.annotation.annotations.depthLine
-  ann.xMin = ann.xMax = currentDepth * STEP_MM
+  ann.yMin = ann.yMax = currentDepth * STEP_MM
   chartMahal.update('none')
 }
 
@@ -2772,7 +2780,7 @@ function updateDepthMarker(mm) {
   for (const chart of [chartLH, chartRH, chartAsym, chartMahal]) {
     const ann = chart?.options.plugins?.annotation?.annotations?.depthLine
     if (!ann) continue
-    ann.xMin = mm; ann.xMax = mm
+    ann.yMin = mm; ann.yMax = mm
     chart.update('none')
   }
   // The radar/bar panels show a single depth, so they move with the marker too.
@@ -2782,7 +2790,7 @@ function updateDepthMarker(mm) {
 function setProfiles(lhStat, rhStat, asymStat, count, lhArea, rhArea, normStat) {
   // Non-finite (NaN "no data", or a band edge built from one) → null so the
   // chart draws a gap at that depth rather than a spurious point.
-  const toXY = vals => vals.map((v,i) => ({x: i*STEP_MM, y: Number.isFinite(v) ? v : null}))
+  const toXY = vals => vals.map((v,i) => ({y: i*STEP_MM, x: Number.isFinite(v) ? v : null}))
   const entries = [
     [chartLH,   lhStat,   lhArea,  normStat?.lh],
     [chartRH,   rhStat,   rhArea,  normStat?.rh],
