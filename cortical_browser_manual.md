@@ -28,19 +28,30 @@ version.
 
 ## Configuration file
 
-Both the browser and the normative‑data builder read their shared settings from one file:
+Both the browser and the normative‑data builder read their shared settings from one file: `$SUBJECTS_DIR/corticalDWI.params.conf`:
 
-**`cortical_browser_config.py`**
+**`corticalDWI_params.conf`**
 
-```python
-TEMPLATE = 'ico6_sym'    # surface template / naming convention: 'ico6_sym' or 'fsLR-32k'
-METRICS  = ['fa', 'md', 'ad', 'rd', 'afd-par', 'afd-perp']   # metrics to search & display
+```init
+target_type=ico6_sym          # surface template (fsLR-32k, ico6_sym, …)
+nsteps=100                     # streamline integration steps
+step_size=0.1                  # integration step size (mm)
+tck_step_size=0.5              # resampled streamline step size (mm)
+max_length=10                  # max streamline length after warp (mm)
+nDepths=30                     # cortical depth points to extract
+angle=45                       # max fixel–streamline angle (degrees)
+csd_fixel_dir=csd_fixels_singletissue  # CSD fixel directory name (relative to dwi/)
+mrds_fixel_dir=mrds_fixels             # MRDS fixel directory name (relative to dwi/mrds/)
+browser_metrics=fa,md,ad,rd,afd-par,afd-perp,mk,ak,rk
 ```
+
+Relevant for the browser and normative data creation are `target_type` and `browser_metrics`
+
 
 | Setting | Meaning |
 |---|---|
-| `TEMPLATE` | Which surface template's files to look for. All TSF and surface files are expected to follow the `{hemi}_{…}_{TEMPLATE}…` naming convention (e.g. `lh_ico6_sym_fa.tsf`, `lh_white_ico6_sym.surf.gii`). Change this one string to retarget the whole toolchain (`ico6_sym` ↔ `fsLR-32k`). |
-| `METRICS` | The allow‑list of metrics to search for, show in the **Metric** dropdown, and include in the normative dataset — in the order they should appear. Each metric `<m>` maps to per‑hemisphere files `{hemi}_{TEMPLATE}_<m>.tsf`. |
+| `target_type` | Which surface template's files to look for. All TSF and surface files are expected to follow the `{hemi}_{…}_{TEMPLATE}…` naming convention (e.g. `lh_ico6_sym_fa.tsf`, `lh_white_ico6_sym.surf.gii`). Change this one string to retarget the whole toolchain (`ico6_sym` ↔ `fsLR-32k`). |
+| `browser_metrics` | The allow‑list of metrics to search for, show in the **Metric** dropdown, and include in the normative dataset — in the order they should appear. Each metric `<m>` maps to per‑hemisphere files `{hemi}_{TEMPLATE}_<m>.tsf`. |
 
 Because this file is the single source of truth, the browser and the normative builder
 always agree on the template and metric set. Edit it in one place; there are no other
@@ -80,13 +91,13 @@ The last three are all optional — without them, the browser still runs, just w
 
 ```bash
 [micromamba|conda] activate corticalDWI
-python cortical_browser/cortical_browser.py <subjects_dir> <subject_id> [--port PORT]
+cortical_browser.sh <$SUBJECTS_DIR> <subject_id> [--port PORT]
 ```
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `subjects_dir` | `/home/lconcha/fs-edmonton` | FreeSurfer‑style subjects directory |
-| `subject_id` | `sub-Mcd005` | Subject folder name under `subjects_dir` |
+| `$SUBJECTS_DIR` | `/home/lconcha/fs-edmonton` | FreeSurfer‑style subjects directory |
+| `subject_id` | `sub-Mcd005` | Subject folder name under `$SUBJECTS_DIR` |
 | `--port` | `8787` | Local server port (>1024) |
 
 On launch it scans the subject for the configured metrics and surfaces, starts the server
@@ -115,7 +126,7 @@ SUBJECTS_DIR=/path/to/subjects  python cortical_create_normative_data_from_tsf.p
 
 **Inputs**
 - `<subjects_dir>/templates/subjects_to_average.txt` — the cohort: one subject ID per line.
-- `cortical_browser_config.py` — `TEMPLATE` and `METRICS` (the same set the browser uses).
+- `$SUBJECTS_DIR/corticalDWI_params.conf$` — for `browser_metrics`.
 
 **What it does**
 - For every subject in the list, it searches **recursively** for each metric's
