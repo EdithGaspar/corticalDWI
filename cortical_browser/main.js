@@ -874,9 +874,7 @@ function setDataCLim(mn, mx) {
 // plot and the surface color scale share the same range.
 function applyAsymValueLimits() {
   if (!chartAsym) return
-  chartAsym.options.scales.x.min = currentAsymMin
-  chartAsym.options.scales.x.max = currentAsymMax
-  chartAsym.update('none')
+  Plotly.relayout(chartAsym, { 'xaxis.range': [currentAsymMin, currentAsymMax] })
 }
 
 function setAsymCLim(mn, mx) {
@@ -1208,9 +1206,8 @@ document.getElementById('metricSel').addEventListener('change', async e => {
     document.getElementById('pos-display').textContent = ''
     resetPivot(nvLhL); resetPivot(nvRhL); resetPivot(nvAsym)
     for (const chart of [chartLH, chartRH, chartAsym]) {
-      chart.data.datasets[0].label = chart.baseLabel
-      for (const i of [0, 1, 2, 3, 4, 5]) chart.data.datasets[i].data = []
-      chart.update('none')
+      Plotly.restyle(chart, { x: [[], [], [], [], [], []], y: [[], [], [], [], [], []] }, [0, 1, 2, 3, 4, 5])
+      Plotly.restyle(chart, { name: [chart.baseLabel] }, [0])
     }
     clearMultivariate()
   }
@@ -1762,8 +1759,7 @@ document.getElementById('showNormativeChk').addEventListener('change', async fun
     if (currentVertex !== null) await selectVertex(currentVertex, nvLhL)
   } else {
     for (const chart of [chartLH, chartRH, chartAsym]) {
-      for (const i of [3, 4, 5]) chart.data.datasets[i].data = []
-      chart.update('none')
+      Plotly.restyle(chart, { x: [[], [], []], y: [[], [], []] }, [3, 4, 5])
     }
   }
 })
@@ -1938,200 +1934,75 @@ document.addEventListener('keydown', e => {
   }
 })
 
-// ── depth-profile charts ──────────────────────────────────────────────────────
-function makeChart(id, color, label, fill = false) {
-  const chart = new Chart(document.getElementById(id), {
-    type: 'line',
-    data: { datasets: [
-      {
-        label, data: [],
-        borderColor: color, backgroundColor: color+'28',
-        pointRadius: 2, tension: 0.3, fill, parsing: false
-      },
-      { // +SD band — hidden from legend, only shown when >1 vertex selected
-        data: [], borderColor: color, borderDash: [5,4], borderWidth: 1,
-        pointRadius: 0, tension: 0.3, fill: false, parsing: false, _isSd: true
-      },
-      { // -SD band
-        data: [], borderColor: color, borderDash: [5,4], borderWidth: 1,
-        pointRadius: 0, tension: 0.3, fill: false, parsing: false, _isSd: true
-      },
-      { // normative (cohort) mean — always white, hidden until data exists
-        label: 'Normative', data: [], borderColor: '#ffffff',
-        pointRadius: 0, tension: 0.3, fill: false, parsing: false, borderWidth: 1.5
-      },
-      { // normative +SD band — invisible; just the fill's upper boundary
-        data: [], borderColor: 'transparent', borderWidth: 0,
-        pointRadius: 0, tension: 0.3, fill: false, parsing: false, _isSd: true
-      },
-      { // normative -SD band — invisible line; shaded gray fill up to +SD
-        data: [], borderColor: 'transparent', borderWidth: 0,
-        backgroundColor: 'rgba(160,160,160,0.30)',
-        pointRadius: 0, tension: 0.3, fill: 4, parsing: false, _isSd: true
-      },
-    ]},
-    options: {
-      indexAxis: 'y',
-      responsive: true, maintainAspectRatio: false, animation: false,
-      onClick: (evt, elements, chart) => setDepthFromChart(chart, evt.y),
-      plugins: {
-        legend: { display: true, labels: { color: PLOT_TEXT, boxWidth: 10, font: {size:10},
-          filter: (item, data) => !data.datasets[item.datasetIndex]?._isSd } },
-        annotation: { annotations: { depthLine: {
-          type: 'line', yMin: 0, yMax: 0,
-          borderColor: ACCENT_YELLOW, borderWidth: 1.5, borderDash: [4,3]
-        }}}
-      },
-      scales: {
-        x: { ticks: { color:PLOT_TEXT, maxTicksLimit:5 }, grid: { color:'#303030' } },
-        y: { type:'linear', reverse:true,
-             title: { display:true, text:'Depth (mm)', color:PLOT_TEXT },
-             ticks: { color:PLOT_TEXT, maxTicksLimit:8, callback: v => v.toFixed(1) },
-             grid:  { color:'#303030' } }
-      }
-    }
-  })
-  chart.baseLabel = label
-  return chart
+// ── depth-profile charts (Plotly) ─────────────────────────────────────────────
+// Depth runs down the y-axis (reversed autorange — pial surface at the top),
+// the metric value runs along x. Each profile chart holds six traces, same
+// roles the old Chart.js datasets played: 0 mean, 1/2 subject ±SD (dashed,
+// hidden from the legend), 3 normative mean, 4/5 normative ±SD (4 is an
+// invisible line, 5 fills back to it for the shaded band).
+const PLOTLY_CONFIG = { displayModeBar: false, responsive: true, scrollZoom: false }
+
+function depthProfileLayout() {
+  return {
+    paper_bgcolor: '#242424', plot_bgcolor: '#242424',
+    font: { color: PLOT_TEXT, size: 10 },
+    margin: { l: 46, r: 12, t: 30, b: 34 },
+    showlegend: true,
+    legend: { orientation: 'h', x: 0, y: 1.2, font: { size: 10, color: PLOT_TEXT } },
+    dragmode: false,
+    hovermode: 'closest',
+    xaxis: { nticks: 5, color: PLOT_TEXT, gridcolor: '#303030', zerolinecolor: '#303030', tickfont: { size: 10 } },
+    yaxis: { autorange: 'reversed', title: { text: 'Depth (mm)', font: { color: PLOT_TEXT } },
+             nticks: 8, tickformat: '.1f', color: PLOT_TEXT, gridcolor: '#303030', zerolinecolor: '#303030',
+             tickfont: { size: 10 } },
+    shapes: [{ type: 'line', xref: 'paper', x0: 0, x1: 1, yref: 'y', y0: 0, y1: 0,
+               line: { color: ACCENT_YELLOW, width: 1.5, dash: 'dash' } }],
+  }
 }
 
-function setDepthFromChart(chart, pixelY) {
-  const mm  = chart.scales.y.getValueForPixel(pixelY)
-  const sl  = document.getElementById('depthSlider')
-  const d   = Math.max(0, Math.min(+sl.max, Math.round(mm / STEP_MM)))
-  sl.value  = d
+function profileTraces(color, label, fillToZero) {
+  return [
+    { x: [], y: [], name: label, mode: 'lines+markers',
+      line: { color, width: 2, shape: 'spline', smoothing: 0.5 }, marker: { size: 3 },
+      fill: fillToZero ? 'tozerox' : 'none', fillcolor: hexToRgba(color, 0.16) },
+    { x: [], y: [], mode: 'lines', line: { width: 0 }, showlegend: false, hoverinfo: 'skip' },
+    { x: [], y: [], mode: 'lines', line: { width: 0 }, fill: 'tonextx', fillcolor: hexToRgba(color, 0.18),
+      showlegend: false, hoverinfo: 'skip' },
+    { x: [], y: [], name: 'Normative', mode: 'lines', line: { color: '#ffffff', width: 1.5 } },
+    { x: [], y: [], mode: 'lines', line: { width: 0 }, showlegend: false, hoverinfo: 'skip' },
+    { x: [], y: [], mode: 'lines', line: { width: 0 }, fill: 'tonextx', fillcolor: 'rgba(160,160,160,0.30)',
+      showlegend: false, hoverinfo: 'skip' },
+  ]
+}
+
+function makeChart(id, color, label, fillToZero = false) {
+  const gd = document.getElementById(id)
+  Plotly.newPlot(gd, profileTraces(color, label, fillToZero), depthProfileLayout(), PLOTLY_CONFIG)
+  gd.baseLabel = label
+  gd.addEventListener('click', e => setDepthFromChart(gd, e.clientY))
+  return gd
+}
+
+// Click-anywhere-on-the-chart-to-set-depth: Plotly's own 'plotly_click' event
+// only fires when a click lands on a plotted point, not on empty chart area,
+// so this listens to the plain DOM click instead and converts its pixel
+// position to a data value via the axis's p2d() (pixel-to-data) helper — the
+// same private-internals approach chartToSvgString used to take for Chart.js
+// (Plotly has no public API for "data value under this arbitrary pixel").
+function setDepthFromChart(gd, clientY) {
+  const fl = gd._fullLayout
+  if (!fl) return
+  const rect = gd.getBoundingClientRect()
+  const yInPlotArea = (clientY - rect.top) - fl._size.t
+  const mm = fl.yaxis.p2d(yInPlotArea)
+  const sl = document.getElementById('depthSlider')
+  const d  = Math.max(0, Math.min(+sl.max, Math.round(mm / STEP_MM)))
+  sl.value = d
   setDepth(d)
 }
 
-// ── vector (SVG) export of a depth-profile chart ──────────────────────────────
-// Chart.js only draws to <canvas> (raster), so this rebuilds the same picture
-// as an SVG by walking the chart's already-computed scales/datasets rather
-// than recording canvas calls — simpler and exact for the plain line/fill
-// charts used here (no gradients, images, or curved beziers beyond the
-// 'tension' the datasets already use, which we render as straight segments —
-// close enough at the sampling density of a depth profile).
-function chartToSvgString(chart, background = '#242424') {
-  const W = chart.width, H = chart.height
-  const xScale = chart.scales.x, yScale = chart.scales.y
-  const gridColor = '#303030', textColor = PLOT_TEXT
-  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-  // Split "rgba(r,g,b,a)" into a plain rgb() fill + a separate fill-opacity
-  // attribute — some SVG renderers (older Inkscape, various PDF converters)
-  // ignore the alpha channel inside a fill="rgba(...)" value and render it
-  // fully opaque, so the alpha needs to travel as its own attribute instead.
-  const splitAlpha = colorStr => {
-    const m = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\)/.exec(colorStr || '')
-    if (!m) return { rgb: colorStr, a: 1 }
-    return { rgb: `rgb(${m[1]},${m[2]},${m[3]})`, a: m[4] !== undefined ? parseFloat(m[4]) : 1 }
-  }
-  const parts = []
-  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="sans-serif">`)
-  if (background) parts.push(`<rect x="0" y="0" width="${W}" height="${H}" fill="${background}"/>`)
-
-  // Gridlines
-  parts.push(`<g stroke="${gridColor}" stroke-width="1">`)
-  for (const t of xScale.ticks) {
-    const px = xScale.getPixelForValue(t.value)
-    parts.push(`<line x1="${px}" y1="${yScale.top}" x2="${px}" y2="${yScale.bottom}"/>`)
-  }
-  for (const t of yScale.ticks) {
-    const py = yScale.getPixelForValue(t.value)
-    parts.push(`<line x1="${xScale.left}" y1="${py}" x2="${xScale.right}" y2="${py}"/>`)
-  }
-  parts.push(`</g>`)
-
-  // Tick labels
-  parts.push(`<g fill="${textColor}" font-size="10">`)
-  for (const t of xScale.ticks) {
-    const px = xScale.getPixelForValue(t.value)
-    const label = t.label !== undefined ? t.label : t.value.toFixed(1)
-    parts.push(`<text x="${px}" y="${yScale.bottom + 14}" text-anchor="middle">${esc(label)}</text>`)
-  }
-  for (const t of yScale.ticks) {
-    const py = yScale.getPixelForValue(t.value)
-    const label = t.label !== undefined ? t.label : String(t.value)
-    parts.push(`<text x="${xScale.left - 6}" y="${py + 3}" text-anchor="end">${esc(label)}</text>`)
-  }
-  parts.push(`</g>`)
-
-  // Axis titles
-  const xTitle = chart.options?.scales?.x?.title?.text
-  if (xTitle) {
-    parts.push(`<text x="${(xScale.left + xScale.right) / 2}" y="${H - 4}" ` +
-      `fill="${textColor}" font-size="11" text-anchor="middle">${esc(xTitle)}</text>`)
-  }
-  const yTitle = chart.options?.scales?.y?.title?.text
-  if (yTitle) {
-    const ty = (yScale.top + yScale.bottom) / 2
-    parts.push(`<text x="12" y="${ty}" fill="${textColor}" font-size="11" text-anchor="middle" ` +
-      `transform="rotate(-90 12 ${ty})">${esc(yTitle)}</text>`)
-  }
-
-  // Datasets: fills first (so mean/data lines draw on top), then strokes.
-  const pixelPoints = ds => ds.data.map(p =>
-    (p == null || p.x == null) ? null : { x: xScale.getPixelForValue(p.x), y: yScale.getPixelForValue(p.y) })
-
-  chart.data.datasets.forEach((ds, i) => {
-    if (!ds.data?.length || chart.getDatasetMeta(i).hidden) return
-    if (typeof ds.fill !== 'number') return
-    const pts = pixelPoints(ds)
-    const targetPts = pixelPoints(chart.data.datasets[ds.fill])
-    let run = []
-    const flush = () => {
-      if (run.length > 1) {
-        const fwd = run.map(k => `${pts[k].x},${pts[k].y}`).join(' L ')
-        const bwd = run.slice().reverse().map(k => `${targetPts[k].x},${targetPts[k].y}`).join(' L ')
-        const { rgb, a } = splitAlpha(ds.backgroundColor)
-        parts.push(`<path d="M ${fwd} L ${bwd} Z" fill="${rgb}" fill-opacity="${a}" stroke="none"/>`)
-      }
-      run = []
-    }
-    pts.forEach((p, k) => { if (p && targetPts[k]) run.push(k); else flush() })
-    flush()
-  })
-
-  chart.data.datasets.forEach((ds, i) => {
-    if (!ds.data?.length || chart.getDatasetMeta(i).hidden) return
-    if (!ds.borderColor || ds.borderColor === 'transparent' || ds.borderWidth === 0) return
-    const pts = pixelPoints(ds)
-    let d = '', drawing = false
-    for (const p of pts) {
-      if (!p) { drawing = false; continue }
-      d += (drawing ? ' L ' : 'M ') + `${p.x},${p.y}`
-      drawing = true
-    }
-    if (!d) return
-    const dash = (ds.borderDash && ds.borderDash.length) ? ` stroke-dasharray="${ds.borderDash.join(',')}"` : ''
-    parts.push(`<path d="${d}" fill="none" stroke="${ds.borderColor}" stroke-width="${ds.borderWidth ?? 1}"${dash}/>`)
-  })
-
-  // Legend (vertical list, top-left of the plot area — simpler and more
-  // robust than reproducing Chart.js's own flow-wrapped horizontal legend).
-  const legendItems = chart.legend?.legendItems || []
-  if (legendItems.length) {
-    parts.push(`<g font-size="10">`)
-    legendItems.forEach((item, k) => {
-      const ly = yScale.top + 12 + k * 14
-      parts.push(`<rect x="${xScale.left + 8}" y="${ly - 8}" width="10" height="10" ` +
-        `fill="${item.fillStyle}" stroke="${item.strokeStyle}"/>`)
-      parts.push(`<text x="${xScale.left + 22}" y="${ly}" fill="${textColor}">${esc(item.text)}</text>`)
-    })
-    parts.push(`</g>`)
-  }
-
-  parts.push(`</svg>`)
-  return parts.join('\n')
-}
-
-function downloadChartSvg(chart, filename) {
-  const svg  = chartToSvgString(chart)
-  const blob = new Blob([svg], { type: 'image/svg+xml' })
-  const url  = URL.createObjectURL(blob)
-  const a    = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
+function downloadChartSvg(gd, filename) {
+  Plotly.downloadImage(gd, { format: 'svg', filename, width: gd._fullLayout.width, height: gd._fullLayout.height })
 }
 
 chartLH   = makeChart('chart-lh',   LH_COLOR, 'LH')
@@ -2146,141 +2017,111 @@ for (const [btnId, chart, suffix] of [
   document.getElementById(btnId).addEventListener('click', e => {
     e.stopPropagation()
     const subj = document.querySelector('.subj')?.textContent || 'subject'
-    downloadChartSvg(chart, `${subj}_${currentMetric}_${suffix}.svg`)
+    downloadChartSvg(chart, `${subj}_${currentMetric}_${suffix}`)
   })
 }
 applyAsymValueLimits()
 
 // ── multivariate explorer charts (row 4) ─────────────────────────────────────
-const mvTick = { color:PLOT_TEXT, font:{size:10} }
-const mvGrid = { color:'#303030' }
+const mvFont = { size: 10, color: PLOT_TEXT }
 
 // Mahalanobis distance vs depth — a mean line per hemisphere with a dashed
 // ±SD band (mirroring the univariate profile charts; the band is only
 // populated when >1 vertex is selected), plus the shared yellow depth
 // reference line. Clicking sets the depth, like the profile charts.
-const mvSdBand = color => ([
-  { data:[], borderColor:color, borderDash:[5,4], borderWidth:1,
-    pointRadius:0, tension:0.3, fill:false, parsing:false, spanGaps:false, _isSd:true },
-  { data:[], borderColor:color, borderDash:[5,4], borderWidth:1,
-    pointRadius:0, tension:0.3, fill:false, parsing:false, spanGaps:false, _isSd:true },
-])
-chartMahal = new Chart(document.getElementById('chart-mahal'), {
-  type: 'line',
-  data: { datasets: [
-    { label:'LH', data:[], borderColor:LH_COLOR, backgroundColor:LH_COLOR+'28',
-      pointRadius:2, tension:0.3, fill:false, parsing:false, spanGaps:false },
-    ...mvSdBand(LH_COLOR),
-    { label:'RH', data:[], borderColor:RH_COLOR, backgroundColor:RH_COLOR+'28',
-      pointRadius:2, tension:0.3, fill:false, parsing:false, spanGaps:false },
-    ...mvSdBand(RH_COLOR),
-  ]},
-  options: {
-    indexAxis: 'y',
-    responsive:true, maintainAspectRatio:false, animation:false,
-    onClick: (evt, els, chart) => setDepthFromChart(chart, evt.y),
-    plugins: {
-      legend: { display:true, labels:{ color:PLOT_TEXT, boxWidth:10, font:{size:10},
-        filter:(item,data) => !data.datasets[item.datasetIndex]?._isSd } },
-      annotation: { annotations: { depthLine: {
-        type:'line', yMin:0, yMax:0, borderColor:ACCENT_YELLOW, borderWidth:1.5, borderDash:[4,3]
-      }}}
-    },
-    scales: {
-      x: { min:0, max:mvMahalLim, title:{ display:true, text:'Mahalanobis distance', color:PLOT_TEXT },
-           ticks:mvTick, grid:mvGrid },
-      y: { type:'linear', reverse:true, title:{ display:true, text:'Depth (mm)', color:PLOT_TEXT },
-           ticks:{ ...mvTick, maxTicksLimit:8, callback:v => v.toFixed(1) }, grid:mvGrid }
-    }
-  }
-})
+function mahalSdBand(color) {
+  return [
+    { x: [], y: [], mode: 'lines', line: { width: 0 }, showlegend: false, hoverinfo: 'skip' },
+    { x: [], y: [], mode: 'lines', line: { width: 0 }, fill: 'tonextx', fillcolor: hexToRgba(color, 0.18),
+      showlegend: false, hoverinfo: 'skip' },
+  ]
+}
+chartMahal = document.getElementById('chart-mahal')
+Plotly.newPlot(chartMahal, [
+  { x: [], y: [], name: 'LH', mode: 'lines+markers', line: { color: LH_COLOR, width: 2 }, marker: { size: 3 } },
+  ...mahalSdBand(LH_COLOR),
+  { x: [], y: [], name: 'RH', mode: 'lines+markers', line: { color: RH_COLOR, width: 2 }, marker: { size: 3 } },
+  ...mahalSdBand(RH_COLOR),
+], {
+  paper_bgcolor: '#242424', plot_bgcolor: '#242424',
+  font: mvFont,
+  margin: { l: 46, r: 12, t: 30, b: 34 },
+  showlegend: true,
+  legend: { orientation: 'h', x: 0, y: 1.2, font: mvFont },
+  dragmode: false, hovermode: 'closest',
+  xaxis: { range: [0, mvMahalLim], title: { text: 'Mahalanobis distance', font: { color: PLOT_TEXT } },
+           color: PLOT_TEXT, gridcolor: '#303030', tickfont: { size: 10 } },
+  yaxis: { autorange: 'reversed', title: { text: 'Depth (mm)', font: { color: PLOT_TEXT } },
+           nticks: 8, tickformat: '.1f', color: PLOT_TEXT, gridcolor: '#303030', tickfont: { size: 10 } },
+  shapes: [{ type: 'line', xref: 'paper', x0: 0, x1: 1, yref: 'y', y0: 0, y1: 0,
+             line: { color: ACCENT_YELLOW, width: 1.5, dash: 'dash' } }],
+}, PLOTLY_CONFIG)
+chartMahal.addEventListener('click', e => setDepthFromChart(chartMahal, e.clientY))
 
 // |z-score| radar — one polygon per hemisphere, one spoke per metric.
 // Mean |z| polygon plus dashed +SD/−SD polygons (hidden from the legend),
-// mirroring the band on the profile/Mahalanobis charts.
-const mvRadarSd = color => ([
-  { data:[], borderColor:color, backgroundColor:'transparent', borderDash:[4,3],
-    borderWidth:1, pointRadius:0, fill:false, _isSd:true },
-  { data:[], borderColor:color, backgroundColor:'transparent', borderDash:[4,3],
-    borderWidth:1, pointRadius:0, fill:false, _isSd:true },
-])
-chartRadar = new Chart(document.getElementById('chart-radar'), {
-  type: 'radar',
-  data: { labels: [], datasets: [
-    { label:'LH', data:[], borderColor:LH_COLOR, backgroundColor:LH_COLOR+'33', borderWidth:2, pointRadius:2 },
-    ...mvRadarSd(LH_COLOR),
-    { label:'RH', data:[], borderColor:RH_COLOR, backgroundColor:RH_COLOR+'33', borderWidth:2, pointRadius:2 },
-    ...mvRadarSd(RH_COLOR),
-  ]},
-  options: {
-    responsive:true, maintainAspectRatio:false, animation:false,
-    plugins: { legend: { display:true, labels:{ color:PLOT_TEXT, boxWidth:10, font:{size:10},
-      filter:(item,data) => !data.datasets[item.datasetIndex]?._isSd } } },
-    scales: { r: {
-      min:0, max:mvZlim,
-      ticks:{ color:PLOT_TEXT, backdropColor:'transparent', showLabelBackdrop:false, font:{size:8}, stepSize:1 },
-      grid:{ color:'#3a3a3a' }, angleLines:{ color:'#3a3a3a' }, pointLabels:{ color:PLOT_TEXT, font:{size:10} }
-    }}
-  }
-})
-
-// Across-vertex sd whiskers on each z-score bar (Chart.js has no native error
-// bars). Reads dataset._sd (signed-z sd per metric) and draws a horizontal
-// whisker with end caps, since the bars are horizontal (indexAxis:'y').
-const mvErrorBars = {
-  id: 'mvErrorBars',
-  afterDatasetsDraw(chart) {
-    const x = chart.scales.x, ctx = chart.ctx, ca = chart.chartArea
-    const clamp = px => Math.max(ca.left, Math.min(ca.right, px))
-    chart.data.datasets.forEach((ds, di) => {
-      const sd = ds._sd
-      const meta = chart.getDatasetMeta(di)
-      if (!sd || meta.hidden) return
-      ctx.save()
-      ctx.lineWidth = 1
-      meta.data.forEach((el, i) => {
-        const v = ds.data[i], s = sd[i]
-        if (v == null || s == null || !isFinite(s) || s <= 0) return
-        ctx.strokeStyle = hexToRgba(ds.borderColor || '#cccccc', zBarAlpha(v))
-        const y = el.y, cap = 3
-        const xp = clamp(x.getPixelForValue(v + s)), xm = clamp(x.getPixelForValue(v - s))
-        ctx.beginPath()
-        ctx.moveTo(xm, y);       ctx.lineTo(xp, y)
-        ctx.moveTo(xm, y - cap); ctx.lineTo(xm, y + cap)
-        ctx.moveTo(xp, y - cap); ctx.lineTo(xp, y + cap)
-        ctx.stroke()
-      })
-      ctx.restore()
-    })
-  }
+// mirroring the band on the profile/Mahalanobis charts. Plotly's scatterpolar
+// doesn't auto-close the polygon like Chart.js's radar did, so closeLoop()
+// repeats the first point at the end of both r and theta.
+const closeLoop = arr => (arr.length ? [...arr, arr[0]] : arr)
+function radarSdBand(color) {
+  return [
+    { r: [], theta: [], type: 'scatterpolar', mode: 'lines', line: { color, width: 1, dash: 'dash' },
+      showlegend: false, hoverinfo: 'skip' },
+    { r: [], theta: [], type: 'scatterpolar', mode: 'lines', line: { color, width: 1, dash: 'dash' },
+      showlegend: false, hoverinfo: 'skip' },
+  ]
 }
+chartRadar = document.getElementById('chart-radar')
+Plotly.newPlot(chartRadar, [
+  { r: [], theta: [], type: 'scatterpolar', name: 'LH', mode: 'lines+markers',
+    line: { color: LH_COLOR, width: 2 }, marker: { size: 4 } },
+  ...radarSdBand(LH_COLOR),
+  { r: [], theta: [], type: 'scatterpolar', name: 'RH', mode: 'lines+markers',
+    line: { color: RH_COLOR, width: 2 }, marker: { size: 4 } },
+  ...radarSdBand(RH_COLOR),
+], {
+  paper_bgcolor: '#242424',
+  font: mvFont,
+  margin: { l: 30, r: 30, t: 20, b: 20 },
+  showlegend: true,
+  legend: { orientation: 'h', x: 0, y: 1.15, font: mvFont },
+  dragmode: false,
+  polar: {
+    bgcolor: '#242424',
+    radialaxis: { range: [0, mvZlim], color: PLOT_TEXT, gridcolor: '#3a3a3a', tickfont: { size: 8 } },
+    angularaxis: { color: PLOT_TEXT, gridcolor: '#3a3a3a', tickfont: { size: 10 } },
+  },
+}, PLOTLY_CONFIG)
+
 // z-score horizontal bars — metrics on the y-axis, signed z on the x-axis.
 // Bar alpha ramps from 0.1 at z=0 to 1.0 at |z|=mvZlim, so bars near zero read
 // as faint and extreme deviations pop; it re-scales with the live |z| limit
 // since zBarAlpha closes over the mutable mvZlim rather than a copied value.
+// The across-vertex SD whisker is Plotly's native error_x — the old Chart.js
+// version needed a hand-rolled canvas plugin (mvErrorBars) for this, since
+// Chart.js has no built-in error bars.
 const zBarAlpha = z => 0.1 + 0.9 * Math.min(Math.abs(z ?? 0), mvZlim) / mvZlim
-chartZBar = new Chart(document.getElementById('chart-zbar'), {
-  type: 'bar',
-  data: { labels: [], datasets: [
-    { label:'LH', data:[], backgroundColor:ctx => hexToRgba(LH_COLOR, zBarAlpha(ctx.raw)), borderColor:LH_COLOR, borderWidth:0 },
-    { label:'RH', data:[], backgroundColor:ctx => hexToRgba(RH_COLOR, zBarAlpha(ctx.raw)), borderColor:RH_COLOR, borderWidth:0 },
-  ]},
-  plugins: [mvErrorBars],
-  options: {
-    indexAxis:'y', responsive:true, maintainAspectRatio:false, animation:false,
-    plugins: {
-      legend: { display:true, labels:{ color:PLOT_TEXT, boxWidth:10, font:{size:10} } },
-      annotation: { annotations: { zeroLine: {
-        type:'line', xMin:0, xMax:0, borderColor:'#888888', borderWidth:1
-      }}}
-    },
-    scales: {
-      x: { min:-mvZlim, max:mvZlim, title:{ display:true, text:'Z-score', color:PLOT_TEXT },
-           ticks:mvTick, grid:mvGrid },
-      y: { ticks:{ color:PLOT_TEXT, font:{size:9} }, grid:{ display:false } }
-    }
-  }
-})
+chartZBar = document.getElementById('chart-zbar')
+Plotly.newPlot(chartZBar, [
+  { x: [], y: [], type: 'bar', orientation: 'h', name: 'LH', marker: { color: [] },
+    error_x: { type: 'data', array: [], color: LH_COLOR, thickness: 1, width: 3 } },
+  { x: [], y: [], type: 'bar', orientation: 'h', name: 'RH', marker: { color: [] },
+    error_x: { type: 'data', array: [], color: RH_COLOR, thickness: 1, width: 3 } },
+], {
+  paper_bgcolor: '#242424', plot_bgcolor: '#242424',
+  font: mvFont,
+  margin: { l: 70, r: 15, t: 10, b: 34 },
+  showlegend: true,
+  legend: { orientation: 'h', x: 0, y: 1.15, font: mvFont },
+  dragmode: false,
+  barmode: 'group',
+  xaxis: { range: [-mvZlim, mvZlim], title: { text: 'Z-score', font: { color: PLOT_TEXT } },
+           color: PLOT_TEXT, gridcolor: '#303030', tickfont: { size: 10 } },
+  yaxis: { type: 'category', autorange: 'reversed', color: PLOT_TEXT, tickfont: { size: 9 }, automargin: true },
+  shapes: [{ type: 'line', xref: 'x', x0: 0, x1: 0, yref: 'paper', y0: 0, y1: 1,
+             line: { color: '#888888', width: 1 } }],
+}, PLOTLY_CONFIG)
 
 // If there's no cohort data, flag the panels so they read as unavailable.
 if (!MV_AVAILABLE) {
@@ -2296,23 +2137,24 @@ const mvLabel = (base, n) => (n > 1 ? `${base} (n=${n})` : base)
 // Mahalanobis-by-depth: mean line per hemisphere plus dashed ±SD band across
 // the selected vertex + neighbor-ring set (the band appears only for n>1).
 function renderMahalChart(data) {
-  const toXY  = arr => arr.map((v,i) => ({ y: i*data.step_mm, x: (v == null ? null : v) }))
-  const band  = (mean, sd, sign) => mean.map((m,i) => ({
-    y: i*data.step_mm,
-    x: (m == null || !sd || sd[i] == null) ? null : m + sign*sd[i]
-  }))
+  const xs   = arr => arr.map(v => (v == null ? null : v))
+  const ys   = arr => arr.map((_, i) => i * data.step_mm)
+  const band = (mean, sd, sign) => mean.map((m, i) => (m == null || !sd || sd[i] == null) ? null : m + sign * sd[i])
   const setHemi = (base, hemi, name) => {
-    chartMahal.data.datasets[base].data     = toXY(hemi.mahal)
-    chartMahal.data.datasets[base].label    = mvLabel(name, data.n_vertices)
-    chartMahal.data.datasets[base + 1].data = band(hemi.mahal, hemi.mahal_sd, +1)
-    chartMahal.data.datasets[base + 2].data = band(hemi.mahal, hemi.mahal_sd, -1)
+    const depth = ys(hemi.mahal)
+    Plotly.restyle(chartMahal, {
+      x: [xs(hemi.mahal), band(hemi.mahal, hemi.mahal_sd, +1), band(hemi.mahal, hemi.mahal_sd, -1)],
+      y: [depth, depth, depth],
+    }, [base, base + 1, base + 2])
+    Plotly.restyle(chartMahal, { name: mvLabel(name, data.n_vertices) }, [base])
   }
   setHemi(0, data.lh, 'LH')
   setHemi(3, data.rh, 'RH')
-  chartMahal.options.scales.x.max = mvMahalLim
-  const ann = chartMahal.options.plugins.annotation.annotations.depthLine
-  ann.yMin = ann.yMax = currentDepth * STEP_MM
-  chartMahal.update('none')
+  Plotly.relayout(chartMahal, {
+    'xaxis.range': [0, mvMahalLim],
+    'shapes[0].y0': currentDepth * STEP_MM,
+    'shapes[0].y1': currentDepth * STEP_MM,
+  })
 }
 
 // Radar (mean |z| ± SD across vertices) and horizontal bars (mean signed z ±
@@ -2320,39 +2162,38 @@ function renderMahalChart(data) {
 // rather than dropping the whole hemisphere, so partially-valid vertices show.
 function renderRadarBar(data, depth) {
   const d = Math.max(0, Math.min(data.n_depths - 1, depth))
-  const at = (arr) => (arr && arr[d]) ? arr[d] : []
+  const at = arr => (arr && arr[d]) ? arr[d] : []
 
-  chartRadar.data.labels = data.metrics
-  const setRadar = (base, hemi) => {
+  const setRadar = (base, hemi, name) => {
     const mean = at(hemi.absz), sd = at(hemi.absz_sd)
-    chartRadar.data.datasets[base].data     = mean
-    chartRadar.data.datasets[base].label    = mvLabel(base === 0 ? 'LH' : 'RH', data.n_vertices)
-    chartRadar.data.datasets[base + 1].data = mean.map((m,i) => (m == null || sd[i] == null) ? null : m + sd[i])
-    chartRadar.data.datasets[base + 2].data = mean.map((m,i) => (m == null || sd[i] == null) ? null : Math.max(0, m - sd[i]))
+    const plus  = mean.map((m, i) => (m == null || sd[i] == null) ? null : m + sd[i])
+    const minus = mean.map((m, i) => (m == null || sd[i] == null) ? null : Math.max(0, m - sd[i]))
+    Plotly.restyle(chartRadar, {
+      r: [closeLoop(mean), closeLoop(plus), closeLoop(minus)],
+      theta: [closeLoop(data.metrics), closeLoop(data.metrics), closeLoop(data.metrics)],
+    }, [base, base + 1, base + 2])
+    Plotly.restyle(chartRadar, { name: mvLabel(name, data.n_vertices) }, [base])
   }
-  setRadar(0, data.lh)
-  setRadar(3, data.rh)
-  chartRadar.options.scales.r.max = mvZlim
-  chartRadar.update('none')
+  setRadar(0, data.lh, 'LH')
+  setRadar(3, data.rh, 'RH')
+  Plotly.relayout(chartRadar, { 'polar.radialaxis.range': [0, mvZlim] })
 
-  chartZBar.data.labels = data.metrics
-  chartZBar.data.datasets[0].data = at(data.lh.z)
-  chartZBar.data.datasets[1].data = at(data.rh.z)
-  chartZBar.data.datasets[0]._sd  = at(data.lh.z_sd)
-  chartZBar.data.datasets[1]._sd  = at(data.rh.z_sd)
-  chartZBar.data.datasets[0].label = mvLabel('LH', data.n_vertices)
-  chartZBar.data.datasets[1].label = mvLabel('RH', data.n_vertices)
-  chartZBar.options.scales.x.min = -mvZlim
-  chartZBar.options.scales.x.max =  mvZlim
-  chartZBar.update('none')
+  const zColor = (arr, color) => arr.map(v => (v == null ? color : hexToRgba(color, zBarAlpha(v))))
+  Plotly.restyle(chartZBar, {
+    y: [data.metrics, data.metrics],
+    x: [at(data.lh.z), at(data.rh.z)],
+    'marker.color': [zColor(at(data.lh.z), LH_COLOR), zColor(at(data.rh.z), RH_COLOR)],
+    'error_x.array': [at(data.lh.z_sd), at(data.rh.z_sd)],
+    name: [mvLabel('LH', data.n_vertices), mvLabel('RH', data.n_vertices)],
+  }, [0, 1])
+  Plotly.relayout(chartZBar, { 'xaxis.range': [-mvZlim, mvZlim] })
 }
 
 function clearMultivariate() {
   mvCurrent = null
-  for (const ch of [chartMahal, chartRadar, chartZBar]) {
-    for (const ds of ch.data.datasets) { ds.data = []; ds._sd = null }
-    ch.update('none')
-  }
+  Plotly.restyle(chartMahal, { x: [[], [], [], [], [], []], y: [[], [], [], [], [], []] }, [0, 1, 2, 3, 4, 5])
+  Plotly.restyle(chartRadar, { r: [[], [], [], [], [], []], theta: [[], [], [], [], [], []] }, [0, 1, 2, 3, 4, 5])
+  Plotly.restyle(chartZBar,  { x: [[], []], y: [[], []], 'error_x.array': [[], []] }, [0, 1])
 }
 
 // Fetch (once per vertex + ring count) and render all three multivariate
@@ -2381,10 +2222,8 @@ async function updateMultivariate(vertIdx, ringSet) {
 function updateDepthMarker(mm) {
   if (!chartLH) return
   for (const chart of [chartLH, chartRH, chartAsym, chartMahal]) {
-    const ann = chart?.options.plugins?.annotation?.annotations?.depthLine
-    if (!ann) continue
-    ann.yMin = mm; ann.yMax = mm
-    chart.update('none')
+    if (!chart?._fullLayout) continue
+    Plotly.relayout(chart, { 'shapes[0].y0': mm, 'shapes[0].y1': mm })
   }
   // The radar/bar panels show a single depth, so they move with the marker too.
   if (mvCurrent) renderRadarBar(mvCurrent, currentDepth)
@@ -2393,7 +2232,8 @@ function updateDepthMarker(mm) {
 function setProfiles(lhStat, rhStat, asymStat, count, lhArea, rhArea, normStat) {
   // Non-finite (NaN "no data", or a band edge built from one) → null so the
   // chart draws a gap at that depth rather than a spurious point.
-  const toXY = vals => vals.map((v,i) => ({y: i*STEP_MM, x: Number.isFinite(v) ? v : null}))
+  const xs = vals => vals.map(v => Number.isFinite(v) ? v : null)
+  const depthsFor = vals => vals.map((_, i) => i * STEP_MM)
   const entries = [
     [chartLH,   lhStat,   lhArea,  normStat?.lh],
     [chartRH,   rhStat,   rhArea,  normStat?.rh],
@@ -2403,28 +2243,26 @@ function setProfiles(lhStat, rhStat, asymStat, count, lhArea, rhArea, normStat) 
     let label = chart.baseLabel
     if (count > 1) label += ` (nVert=${count})`
     if (area != null) label += ` [${area.toFixed(1)} mm²]`
-    chart.data.datasets[0].label = label
-    chart.data.datasets[0].data  = toXY(stat.mean)
-    if (count > 1 && stat.sd) {
-      chart.data.datasets[1].data = toXY(stat.mean.map((m,i) => m + stat.sd[i]))
-      chart.data.datasets[2].data = toXY(stat.mean.map((m,i) => m - stat.sd[i]))
-    } else {
-      chart.data.datasets[1].data = []
-      chart.data.datasets[2].data = []
-    }
 
-    if (norm) {
-      chart.data.datasets[3].label = `Normative (nSubj=${Math.max(...norm.n)})`
-      chart.data.datasets[3].data  = toXY(norm.mean)
-      chart.data.datasets[4].data  = toXY(norm.mean.map((m,i) => m + norm.sd[i]))
-      chart.data.datasets[5].data  = toXY(norm.mean.map((m,i) => m - norm.sd[i]))
-    } else {
-      chart.data.datasets[3].data = []
-      chart.data.datasets[4].data = []
-      chart.data.datasets[5].data = []
-    }
+    const depth = depthsFor(stat.mean)
+    const mean  = xs(stat.mean)
+    const hasSd = count > 1 && stat.sd
+    const plus  = hasSd ? xs(stat.mean.map((m, i) => m + stat.sd[i])) : []
+    const minus = hasSd ? xs(stat.mean.map((m, i) => m - stat.sd[i])) : []
+    const sdDepth = hasSd ? depth : []
+
+    const normDepth = norm ? depthsFor(norm.mean) : []
+    const normMean  = norm ? xs(norm.mean) : []
+    const normPlus  = norm ? xs(norm.mean.map((m, i) => m + norm.sd[i])) : []
+    const normMinus = norm ? xs(norm.mean.map((m, i) => m - norm.sd[i])) : []
+    const normLabel = norm ? `Normative (nSubj=${Math.max(...norm.n)})` : 'Normative'
+
+    Plotly.restyle(chart, {
+      x: [mean, plus, minus, normMean, normPlus, normMinus],
+      y: [depth, sdDepth, sdDepth, normDepth, normDepth, normDepth],
+    }, [0, 1, 2, 3, 4, 5])
+    Plotly.restyle(chart, { name: [label, normLabel] }, [0, 3])
   }
-  chartLH.update('none'); chartRH.update('none'); chartAsym.update('none')
   updateDepthMarker(currentDepth * STEP_MM)
 }
 

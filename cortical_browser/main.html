@@ -117,6 +117,7 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
 .svgbtn:hover { opacity: 1; color: var(--accent-yellow); border-color: var(--accent-yellow); }
 .plot-cell { display: flex; flex-direction: column; padding: 20px 5px 4px; }
 .chart-wrap { position: relative; flex: 1; min-height: 0; background: #242424; }
+.plotly-chart { width: 100%; height: 100%; }
 .cbar {
   position: absolute; bottom: 5px; left: 10px; right: 10px; z-index: 10; pointer-events: none;
 }
@@ -329,31 +330,31 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
   <div class="cell plot-cell grow3">
     <span class="clabel">LH depth profile</span>
     <button class="svgbtn" id="svgBtnLH" title="Save this chart as a vector SVG file">SVG</button>
-    <div class="chart-wrap"><canvas id="chart-lh"></canvas></div>
+    <div class="chart-wrap"><div id="chart-lh" class="plotly-chart"></div></div>
   </div>
   <div class="cell plot-cell grow3">
     <span class="clabel">RH depth profile</span>
     <button class="svgbtn" id="svgBtnRH" title="Save this chart as a vector SVG file">SVG</button>
-    <div class="chart-wrap"><canvas id="chart-rh"></canvas></div>
+    <div class="chart-wrap"><div id="chart-rh" class="plotly-chart"></div></div>
   </div>
   <div class="cell plot-cell grow3">
     <span class="clabel">Asymmetry profile</span>
     <button class="svgbtn" id="svgBtnAsym" title="Save this chart as a vector SVG file">SVG</button>
-    <div class="chart-wrap"><canvas id="chart-asym"></canvas></div>
+    <div class="chart-wrap"><div id="chart-asym" class="plotly-chart"></div></div>
   </div>
 
   <!-- Row 4: multivariate explorer (Mahalanobis / |z| radar / z-score bars) -->
   <div class="cell plot-cell grow4">
     <span class="clabel" id="clabel-mahal">Mahalanobis distance</span>
-    <div class="chart-wrap"><canvas id="chart-mahal"></canvas></div>
+    <div class="chart-wrap"><div id="chart-mahal" class="plotly-chart"></div></div>
   </div>
   <div class="cell plot-cell grow4">
     <span class="clabel" id="clabel-radar">|Z-score| radar</span>
-    <div class="chart-wrap"><canvas id="chart-radar"></canvas></div>
+    <div class="chart-wrap"><div id="chart-radar" class="plotly-chart"></div></div>
   </div>
   <div class="cell plot-cell grow4">
     <span class="clabel" id="clabel-zbar">Z-scores</span>
-    <div class="chart-wrap"><canvas id="chart-zbar"></canvas></div>
+    <div class="chart-wrap"><div id="chart-zbar" class="plotly-chart"></div></div>
   </div>
 
   <!-- Draggable row-resize gutters (placed into the gutter tracks 2/4/6) -->
@@ -363,8 +364,7 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
 </div>
 </main>
 
-<script src="__CHARTJS_CDN__"></script>
-<script src="__CHARTJS_ANN_CDN__"></script>
+<script src="__PLOTLY_CDN__"></script>
 <script type="module" src="/static/main.js?v=__CACHE_BUST__"></script>
 <div id="mvMetricWarning" class="mv-warn">
   <span id="mvMetricWarningText"></span>

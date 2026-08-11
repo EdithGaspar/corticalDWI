@@ -22,9 +22,7 @@ from urllib.parse import urlparse, parse_qs
 
 STEP_MM         = 0.5
 NIIVUE_CDN      = 'https://cdn.jsdelivr.net/npm/@niivue/niivue/dist/index.js'
-CHARTJS_CDN     = 'https://cdn.jsdelivr.net/npm/chart.js/dist/chart.umd.min.js'
-CHARTJS_ANN_CDN = ('https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3'
-                   '/dist/chartjs-plugin-annotation.min.js')
+PLOTLY_CDN      = 'https://cdn.plot.ly/plotly-2.35.2.min.js'
 
 _WEB_DIR = os.path.dirname(__file__)
 
@@ -616,8 +614,7 @@ def make_html(subj_id, vol_path, lh_path, rh_path, overlay_info, port, surf_type
     subs = [
         ('__SUBJ_ID__',        subj_id),
         ('__NIIVUE_CDN__',     NIIVUE_CDN),
-        ('__CHARTJS_CDN__',    CHARTJS_CDN),
-        ('__CHARTJS_ANN_CDN__', CHARTJS_ANN_CDN),
+        ('__PLOTLY_CDN__',     PLOTLY_CDN),
         ('__VOLUMES_JSON__',   json.dumps(volumes)),
         ('__SURFS_JSON__',     json.dumps(surfs)),
         ('__SURF_TYPES_JSON__', json.dumps(surf_types_urls)),
