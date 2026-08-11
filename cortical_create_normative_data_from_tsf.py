@@ -31,7 +31,7 @@ import os, sys, glob, argparse
 import numpy as np
 import h5py
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'cortical_browser'))
 from cortical_io import read_mrtrix_tsf, pad_to_matrix
 from cortical_browser_config import TEMPLATE, METRICS   # shared with cortical_browser.py
 

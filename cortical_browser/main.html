@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cortical Browser — __SUBJ_ID__</title>
+<style>
+:root {
+  --accent-yellow: #F5C842;   /* selected-vertex accent, shared by box/crosshair/plot line */
+  --plot-text: #dddddd;       /* CSS twin of the JS PLOT_TEXT const (plot + colorbar text) */
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #1f1f1f; color: #ccc;
+  font: 11px/1.4 -apple-system, "Segoe UI", Arial, sans-serif;
+  display: flex; flex-direction: row; height: 100vh; overflow: hidden;
+}
+/* Fixed-width control column on the left: sections never reflow, so every
+   control keeps a stable position. Scrolls vertically if it overflows. */
+#sidebar {
+  width: 224px; flex-shrink: 0; height: 100vh; overflow-y: auto; overflow-x: hidden;
+  background: #2b2b2b; border-right: 1px solid #444444;
+  padding: 6px 8px 14px; display: flex; flex-direction: column; gap: 6px;
+}
+#main { flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; }
+.ctl-group { display: flex; flex-direction: column; gap: 4px; padding-top: 5px; border-top: 1px solid #3a3a3a; }
+.ctl-h {
+  color: var(--accent-yellow); font-size: 9px; letter-spacing: 0.8px;
+  text-transform: uppercase; font-weight: bold; opacity: 0.9; margin: 1px 0;
+}
+.ctl-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+#sidebar select { max-width: 100%; }
+.apptitle { font-weight: bold; color: var(--accent-yellow); font-size: 12px; letter-spacing: 0.5px; white-space: nowrap; }
+.space { color: #999; font-size: 10px; white-space: nowrap; }
+.subj { font-weight: bold; color: #f0f0f0; font-size: 12px; white-space: nowrap; }
+.glab { color: #d1d1d1; font-size: 10px; white-space: nowrap; }
+label { display: flex; align-items: center; gap: 3px; white-space: nowrap; color: #999; }
+select {
+  background: #d9d9d9; color: #1a1a1a; border: 1px solid #4d4d4d;
+  border-radius: 3px; padding: 1px 3px; font-size: 10px;
+}
+input[type=range] {
+  width: 60px; cursor: pointer; accent-color: #8a8a8a;
+}
+input[type=checkbox] { cursor: pointer; accent-color: #8a8a8a; }
+input[type=number] {
+  background: #d9d9d9; color: #1a1a1a; border: 1px solid #4d4d4d;
+  border-radius: 3px; padding: 1px 4px; font-size: 10px; width: 58px;
+  -moz-appearance: textfield;
+}
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button { display: none; }
+/* Re-enable up/down spinners for the Rings field only */
+#ringsInput { -moz-appearance: number-input; width: 52px; }
+#ringsInput::-webkit-inner-spin-button,
+#ringsInput::-webkit-outer-spin-button {
+  display: inline-block; -webkit-appearance: inner-spin-button; opacity: 1;
+}
+#vtxInput {
+  background: var(--accent-yellow); color: #1a1a1a; border: 1px solid var(--accent-yellow); font-weight: bold;
+}
+button.cbtn {
+  background: #3a3a3a; color: #ddd; border: 1px solid #555555;
+  border-radius: 3px; padding: 1px 6px; font-size: 10px; cursor: pointer;
+}
+button.cbtn:hover { background: #484848; }
+#depth-label { color: #d1d1d1; min-width: 40px; }
+#pos-display  { color: #999999; font-size: 11px; max-width: 100%; white-space: pre-line; font-family: monospace; }
+.vtx-display  {
+  color: #ccc; font-size: 11px; font-family: monospace; font-weight: bold;
+  background: #262626; border: 1px solid #555555; border-radius: 3px;
+  padding: 1px 7px; white-space: nowrap; min-width: 76px;
+  text-align: center;
+}
+#grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  /* four content rows separated by three draggable gutter tracks; the content
+     row sizes are driven by --gr1..--gr4 so gutters can rescale them live */
+  grid-template-rows: var(--gr1,1fr) 7px var(--gr2,1fr) 7px var(--gr3,1fr) 7px var(--gr4,1fr);
+  flex: 1; gap: 2px; background: #0a0a0a; overflow: hidden;
+}
+.cell { position: relative; overflow: hidden; background: #141414; }
+/* pin each panel group to its content row (tracks 1,3,5,7) so auto-placement
+   never lands a panel in a gutter track */
+.grow1 { grid-row: 1; } .grow2 { grid-row: 3; } .grow3 { grid-row: 5; } .grow4 { grid-row: 7; }
+/* draggable row-resize gutters, spanning all columns */
+.rgutter { grid-column: 1 / -1; cursor: row-resize; background: #0a0a0a; touch-action: none; }
+.rgutter:hover { background: var(--accent-yellow); }
+/* double-click maximize: only the maximized panel is shown, filling the grid */
+#grid.has-max > .cell:not(.maxed) { display: none; }
+#grid.has-max > .rgutter { display: none; }
+#grid.has-max > .cell.maxed { grid-row: 1 / -1 !important; grid-column: 1 / -1 !important; }
+canvas.nv-canvas { display: block; width: 100% !important; height: 100% !important; }
+.clabel {
+  position: absolute; top: 4px; left: 6px; z-index: 10;
+  font-size: 9px; letter-spacing: 0.4px; text-transform: uppercase;
+  color: #999999; background: rgba(0,0,0,0.55);
+  padding: 1px 5px; border-radius: 3px; pointer-events: none;
+}
+.cell-span3 { grid-column: 1 / -1; }
+/* per-panel maximize/restore button (top-right corner) */
+.maxbtn {
+  position: absolute; top: 3px; right: 3px; z-index: 15;
+  width: 18px; height: 18px; line-height: 16px; text-align: center;
+  font-size: 12px; color: #cfcfcf;
+  background: rgba(0,0,0,0.5); border: 1px solid #555555; border-radius: 3px;
+  cursor: pointer; padding: 0; opacity: 0.45;
+}
+.maxbtn:hover { opacity: 1; color: var(--accent-yellow); border-color: var(--accent-yellow); }
+.svgbtn {
+  position: absolute; top: 3px; right: 24px; z-index: 15;
+  height: 18px; line-height: 16px; padding: 0 5px;
+  font-size: 10px; color: #cfcfcf;
+  background: rgba(0,0,0,0.5); border: 1px solid #555555; border-radius: 3px;
+  cursor: pointer; opacity: 0.45;
+}
+.svgbtn:hover { opacity: 1; color: var(--accent-yellow); border-color: var(--accent-yellow); }
+.plot-cell { display: flex; flex-direction: column; padding: 20px 5px 4px; }
+.chart-wrap { position: relative; flex: 1; min-height: 0; background: #242424; }
+.cbar {
+  position: absolute; bottom: 5px; left: 10px; right: 10px; z-index: 10; pointer-events: none;
+}
+.cbar-title {
+  display: block; text-align: center;
+  font-size: 11px; color: var(--plot-text); margin-bottom: 2px; font-family: monospace;
+}
+.cbar-g {
+  height: 8px; border-radius: 2px; border: 1px solid rgba(255,255,255,0.08);
+}
+.cbar-ll {
+  display: flex; justify-content: space-between;
+  font-size: 11px; color: var(--plot-text); margin-top: 2px; font-family: monospace;
+}
+.mv-warn {
+  position: fixed; left: 8px; bottom: 8px; z-index: 100; width: 208px;
+  background: rgba(51,38,0,0.92); border: 1px solid var(--accent-yellow);
+  color: var(--accent-yellow); font-size: 10px; line-height: 1.4;
+  padding: 5px 20px 5px 8px; border-radius: 4px; display: none;
+}
+.mv-warn-close {
+  position: absolute; top: 2px; right: 4px; cursor: pointer;
+  background: none; border: none; color: var(--accent-yellow);
+  font-size: 13px; line-height: 1; padding: 2px; opacity: 0.7;
+}
+.mv-warn-close:hover { opacity: 1; }
+</style>
+</head>
+<body>
+
+<aside id="sidebar">
+  <div class="apptitle">CORTICAL BROWSER</div>
+  <div class="space">T1 space</div>
+  <div class="subj">__SUBJ_ID__</div>
+  <button class="cbtn" id="openDwiBtn" title="Open the FA map in DWI space in a new tab, with the DWI-space streamlines overlaid. The crosshair there follows the vertex/depth selected here.">Open DWI space</button>
+
+  <section class="ctl-group">
+    <h3 class="ctl-h">Global</h3>
+    <div class="ctl-row"><label>Metric <select id="metricSel">__METRIC_OPTIONS__</select></label></div>
+    <div class="ctl-row"><label>Depth
+      <input type="range" id="depthSlider" min="0" max="__MAX_DEPTH__" value="__INIT_DEPTH__">
+      <span id="depth-label">__INIT_DEPTH_MM__ mm</span></label></div>
+  </section>
+
+  <section class="ctl-group">
+    <h3 class="ctl-h">Surfaces</h3>
+    <div class="ctl-row">
+      <span class="glab">Data</span>
+      <input type="number" id="climMin" step="0.001" title="Color min">
+      <span style="color:#999999">–</span>
+      <input type="number" id="climMax" step="0.001" title="Color max">
+      <button class="cbtn" id="climAuto">Auto</button>
+    </div>
+    <div class="ctl-row">
+      <label>cmap <select id="cmapSel"></select></label>
+      <label><input type="checkbox" id="cmapInv"> Inv</label>
+      <label>Ov <input type="range" id="ovOp" min="0" max="100" value="100"></label>
+    </div>
+    <div class="ctl-row">
+      <span class="glab">Asym</span>
+      <input type="number" id="asymMin" step="0.001" title="Asym color min">
+      <span style="color:#999999">–</span>
+      <input type="number" id="asymMax" step="0.001" title="Asym color max">
+      <button class="cbtn" id="asymAuto">Auto</button>
+    </div>
+    <div class="ctl-row">
+      <label>cmap <select id="cmapAsymSel">
+        <option value="bwr">blue-white-red</option>
+        <option value="cwr">cyan-white-red</option>
+        <option value="gwr">green-white-red</option>
+        <option value="blue2red">blue2red (hue)</option>
+        <option value="blue2magenta">blue2magenta</option>
+        <option value="hsv">hsv</option>
+        <option value="jet">jet</option>
+      </select></label>
+      <label><input type="checkbox" id="cmapAsymInv"> Inv</label>
+    </div>
+    <div class="ctl-row"><label>Shader <select id="shaderSel">
+      <option value="Matte">Matte</option>
+      <option value="Phong">Phong</option>
+      <option value="Diffuse" selected>Diffuse</option>
+    </select></label></div>
+    <div class="ctl-row">
+      <label>LH surf <select id="lhSurfSel"></select></label>
+      <label>RH surf <select id="rhSurfSel"></select></label>
+      <label>Asym surf <select id="asymSurfSel"></select></label>
+    </div>
+    <div class="ctl-row">
+      <label>Vertex <input type="number" id="vtxInput" min="0" step="1" title="Jump to vertex ID"></label>
+      <label>Rings <input type="number" id="ringsInput" min="0" step="1" value="0" title="Neighbor rings to average around the selected vertex"></label>
+    </div>
+    <div class="ctl-row">
+      <button class="cbtn" id="loadVertexIdsBtn" title="Load a .txt file of vertex indices (one per line). While loaded, this set replaces interactive vertex/rings selection everywhere — plots, streamlines, and the DWI-space link.">Load vertex IDs</button>
+      <button class="cbtn" id="saveVertexIdsBtn" title="Save the current selection (however it was made) as a .txt file, one vertex ID per line — the same format Load vertex IDs reads">Save vertex IDs</button>
+      <button class="cbtn" id="unloadVertexIdsBtn" disabled title="Discard the loaded vertex ID list and return to interactive click/Vertex/Rings selection">Unload vertex IDs</button>
+    </div>
+    <input type="file" id="vertexIdsFile" accept=".txt" style="display:none">
+    <div class="ctl-row"><span id="vertexIdsStatus" class="glab"></span></div>
+    <div class="ctl-row">
+      <label><input type="checkbox" id="pivotAtVertexChk"> Pivot@vertex</label>
+      <button class="cbtn" id="resetPivotBtn" title="Reset 3D view rotation pivot to the whole-brain center">Reset pivot</button>
+    </div>
+    <div class="ctl-row">
+      <span class="glab">LH</span><span id="vtx-display-lh" class="vtx-display">—, —, — mm</span>
+    </div>
+    <div class="ctl-row">
+      <span class="glab">RH</span><span id="vtx-display-rh" class="vtx-display">—, —, — mm</span>
+    </div>
+  </section>
+
+  <section class="ctl-group">
+    <h3 class="ctl-h">Orthoslices</h3>
+    <div class="ctl-row"><label title="Volume shown in the orthoslices">Volume <select id="volSel"></select></label></div>
+    <div class="ctl-row"><label title="Colormap for the orthoslice volume">cmap <select id="volCmapSel"></select></label></div>
+    <div class="ctl-row">
+      <input type="number" id="volClipMin" step="any" title="Orthoslice color min (clip)">
+      <span style="color:#999999">–</span>
+      <input type="number" id="volClipMax" step="any" title="Orthoslice color max (clip)">
+      <button class="cbtn" id="volClipAuto" title="Reset the orthoslice color range to the volume default">Auto</button>
+    </div>
+    <input type="file" id="volFile" accept=".nii,.nii.gz,.gz,.mgz,.mgh,.hdr,.img" style="display:none">
+    <div class="ctl-row">
+      <label><input type="checkbox" id="radioConv" checked> Rad</label>
+      <label><input type="checkbox" id="crosshairChk" checked> X-hair</label>
+      <label title="Smooth (linear) vs nearest-neighbor orthoslice interpolation — shortcut: i"><input type="checkbox" id="interpChk" checked> Interp</label>
+    </div>
+    <div class="ctl-row">
+      <label title="Overlay white-matter surface outline on the orthoslices (loaded on first use)"><input type="checkbox" id="contourWmChk"> WM</label>
+      <label title="Overlay pial surface outline on the orthoslices (loaded on first use)"><input type="checkbox" id="contourPialChk"> pial</label>
+    </div>
+    <div class="ctl-row">
+      <label title="In the 3-D panel, cut away the octant nearest the crosshair so the volume render is opened up along the three orthogonal slice planes, instead of showing an opaque whole-brain render — shortcut: c"><input type="checkbox" id="cutaway3DChk"> 3D cutaway</label>
+      <label title="Flip which octant the 3D cutaway removes"><input type="checkbox" id="cutawayInvertChk"> Invert</label>
+    </div>
+    <div class="ctl-row"><span id="pos-display"></span></div>
+  </section>
+
+  <section class="ctl-group">
+    <h3 class="ctl-h">Streamlines</h3>
+    <div class="ctl-row">
+      <button class="cbtn" id="loadStreamlinesBtn" title="Load LH/RH Laplace white-matter streamlines (.tck) overlaid on the orthoslices">Load streamlines</button>
+      <label title="Show/hide the loaded streamlines on the orthoslices"><input type="checkbox" id="streamlineVisibleChk" checked disabled> Show</label>
+    </div>
+    <div class="ctl-row">
+      <label title="Which streamlines to display: every one, or only those seeded from the selected vertex/rings">
+        <select id="streamlineModeSel" disabled>
+          <option value="selected" selected>Selected vertex</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+    </div>
+    <div class="ctl-row">
+      <label title="Color streamlines by their start-to-end direction, or a single fixed color">Color
+        <select id="streamlineColorSel" disabled>
+          <option value="direction" selected>Direction</option>
+          <option value="fixed">Custom</option>
+        </select>
+      </label>
+      <input type="color" id="streamlineColorPicker" value="#f5c842" disabled style="display:none" title="Custom streamline color">
+    </div>
+  </section>
+
+  <section class="ctl-group">
+    <h3 class="ctl-h">Plots</h3>
+    <div class="ctl-row"><label><input type="checkbox" id="showNormativeChk" title="Fetch and overlay cohort normative mean ± SD (computed lazily on first use)"> Show normative</label></div>
+    <div class="ctl-row">
+      <label title="Max |z| shown on the radar and z-score bar panels">|z|≤ <input type="number" id="mvZlimInput" min="0.5" step="0.5" value="3"></label>
+      <label title="Max Mahalanobis distance shown on the multivariate depth panel">Mahal≤ <input type="number" id="mvMahalInput" min="1" step="1" value="10"></label>
+    </div>
+  </section>
+</aside>
+<main id="main">
+
+<div id="grid">
+  <!-- Row 1: surface 3-D renders -->
+  <div class="cell grow1">
+    <canvas id="gl-lh" class="nv-canvas"></canvas>
+    <span class="clabel">LH lateral</span>
+    <div class="cbar">
+      <span class="cbar-title" id="cbtitle-lh"></span>
+      <div class="cbar-g" id="cbgrad-lh"></div>
+      <div class="cbar-ll"><span id="cblbl-lh-min">0</span><span id="cblbl-lh-max">1</span></div>
+    </div>
+  </div>
+  <div class="cell grow1">
+    <canvas id="gl-rh" class="nv-canvas"></canvas>
+    <span class="clabel">RH lateral</span>
+    <div class="cbar">
+      <span class="cbar-title" id="cbtitle-rh"></span>
+      <div class="cbar-g" id="cbgrad-rh"></div>
+      <div class="cbar-ll"><span id="cblbl-rh-min">0</span><span id="cblbl-rh-max">1</span></div>
+    </div>
+  </div>
+  <div class="cell grow1">
+    <canvas id="gl-asym" class="nv-canvas"></canvas>
+    <span class="clabel">Asymmetry index (LH geom)</span>
+    <div class="cbar">
+      <span class="cbar-title" id="cbtitle-asym"></span>
+      <div class="cbar-g" id="cbgrad-asym"></div>
+      <div class="cbar-ll"><span id="cblbl-asym-min">-1</span><span id="cblbl-asym-max">1</span></div>
+    </div>
+  </div>
+
+  <!-- Row 2: single multiplanar orthoslice (row layout = axial/coronal/sagittal side by side) -->
+  <div class="cell cell-span3 grow2">
+    <canvas id="gl-slices" class="nv-canvas"></canvas>
+  </div>
+
+  <!-- Row 3: depth-profile charts -->
+  <div class="cell plot-cell grow3">
+    <span class="clabel">LH depth profile</span>
+    <button class="svgbtn" id="svgBtnLH" title="Save this chart as a vector SVG file">SVG</button>
+    <div class="chart-wrap"><canvas id="chart-lh"></canvas></div>
+  </div>
+  <div class="cell plot-cell grow3">
+    <span class="clabel">RH depth profile</span>
+    <button class="svgbtn" id="svgBtnRH" title="Save this chart as a vector SVG file">SVG</button>
+    <div class="chart-wrap"><canvas id="chart-rh"></canvas></div>
+  </div>
+  <div class="cell plot-cell grow3">
+    <span class="clabel">Asymmetry profile</span>
+    <button class="svgbtn" id="svgBtnAsym" title="Save this chart as a vector SVG file">SVG</button>
+    <div class="chart-wrap"><canvas id="chart-asym"></canvas></div>
+  </div>
+
+  <!-- Row 4: multivariate explorer (Mahalanobis / |z| radar / z-score bars) -->
+  <div class="cell plot-cell grow4">
+    <span class="clabel" id="clabel-mahal">Mahalanobis distance</span>
+    <div class="chart-wrap"><canvas id="chart-mahal"></canvas></div>
+  </div>
+  <div class="cell plot-cell grow4">
+    <span class="clabel" id="clabel-radar">|Z-score| radar</span>
+    <div class="chart-wrap"><canvas id="chart-radar"></canvas></div>
+  </div>
+  <div class="cell plot-cell grow4">
+    <span class="clabel" id="clabel-zbar">Z-scores</span>
+    <div class="chart-wrap"><canvas id="chart-zbar"></canvas></div>
+  </div>
+
+  <!-- Draggable row-resize gutters (placed into the gutter tracks 2/4/6) -->
+  <div class="rgutter" data-above="1" data-below="2" style="grid-row:2"></div>
+  <div class="rgutter" data-above="2" data-below="3" style="grid-row:4"></div>
+  <div class="rgutter" data-above="3" data-below="4" style="grid-row:6"></div>
+</div>
+</main>
+
+<script src="__CHARTJS_CDN__"></script>
+<script src="__CHARTJS_ANN_CDN__"></script>
+<script type="module" src="/static/main.js?v=__CACHE_BUST__"></script>
+<div id="mvMetricWarning" class="mv-warn">
+  <span id="mvMetricWarningText"></span>
+  <button type="button" class="mv-warn-close" title="Dismiss">&times;</button>
+</div>
+</body>
+</html>

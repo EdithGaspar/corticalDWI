@@ -80,7 +80,7 @@ The last three are all optional — without them, the browser still runs, just w
 
 ```bash
 [micromamba|conda] activate corticalDWI
-python cortical_browser.py <subjects_dir> <subject_id> [--port PORT]
+python cortical_browser/cortical_browser.py <subjects_dir> <subject_id> [--port PORT]
 ```
 
 | Argument | Default | Meaning |
