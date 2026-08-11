@@ -46,8 +46,13 @@ const neighborMeshes = new Map() // nv instance -> its neighbor-rings connectome
 // ── multivariate (Mahalanobis / z-score) explorer state ──────────────────────
 // Available only when the server found cohort data (same gate as normative).
 const MV_AVAILABLE = Object.keys(NORMATIVE).length > 0
+// Off by default: the per-vertex Mahalanobis fit re-estimates a cohort
+// covariance from scratch on every request, which gets slower as more
+// control subjects are added — not worth paying on every vertex jump unless
+// the panels are actually being looked at.
+let showMultivariate = false
 let mvZlim = 3            // max |z| on radar / z-bar panels (user-editable)
-let mvMahalLim = 10       // max Mahalanobis distance on the depth panel
+let mvMahalLim = 50       // max Mahalanobis distance on the depth panel
 const mvCache = {}        // "vertex:rings" -> parsed /mahal payload
 let mvCurrent = null      // payload for the currently selected vertex
 
@@ -1610,7 +1615,10 @@ async function selectVertex(vertIdx, nvInst) {
   // Multivariate panels fetch independently so the profiles above render
   // immediately rather than waiting on the server-side Mahalanobis compute.
   // They aggregate over the same neighbor-ring set as the univariate charts.
-  updateMultivariate(vertIdx, ringSet)
+  // Debounced (not fetched directly) so scanning quickly across several
+  // vertices doesn't queue up a full Mahalanobis recompute for every one of
+  // them — only the vertex the user settles on pays that cost.
+  scheduleMultivariateUpdate(vertIdx, ringSet)
 }
 
 async function pickOnSurface(canvas, mouseX, mouseY, nvInst) {
@@ -1782,6 +1790,24 @@ document.getElementById('showNormativeChk').addEventListener('change', async fun
   }
 }
 
+// ── show/hide multivariate (Mahalanobis/radar/z-score) panels ────────────────
+// Off by default (see showMultivariate declaration): fetching/computing them
+// on every vertex jump got expensive as the cohort grew, so they're opt-in.
+document.getElementById('showMultivariateChk').addEventListener('change', function() {
+  showMultivariate = this.checked
+  document.getElementById('grid').classList.toggle('mv-hidden', !showMultivariate)
+  if (showMultivariate) {
+    if (currentVertex !== null) updateMultivariate(currentVertex, selectedVertices)
+  } else {
+    clearMultivariate()
+  }
+  // Rows 1-3 reclaim/cede the grid space row 4 just gave up or took back —
+  // nudge NiiVue/Plotly's own resize observers to pick up the new cell sizes.
+  window.dispatchEvent(new Event('resize'))
+})
+// Collapsed at startup to match showMultivariate's default-off state.
+document.getElementById('grid').classList.toggle('mv-hidden', !showMultivariate)
+
 // ── multivariate panel limits (radar/bar |z| and Mahalanobis depth) ──────────
 document.getElementById('mvZlimInput').addEventListener('change', function() {
   const v = parseFloat(this.value)
@@ -1796,7 +1822,7 @@ document.getElementById('mvMahalInput').addEventListener('change', function() {
   if (mvCurrent) renderMahalChart(mvCurrent)
 })
 if (!MV_AVAILABLE) {
-  for (const id of ['mvZlimInput','mvMahalInput']) {
+  for (const id of ['showMultivariateChk','mvZlimInput','mvMahalInput']) {
     const el = document.getElementById(id)
     el.disabled = true
     el.parentElement.style.opacity = 0.4
@@ -2146,6 +2172,18 @@ if (!MV_AVAILABLE) {
   }
 }
 
+for (const [btnId, chart, suffix] of [
+  ['svgBtnMahal', chartMahal, 'mahalanobis_distance'],
+  ['svgBtnRadar', chartRadar, 'zscore_radar'],
+  ['svgBtnZBar',  chartZBar,  'zscore_bars'],
+]) {
+  document.getElementById(btnId).addEventListener('click', e => {
+    e.stopPropagation()
+    const subj = document.querySelector('.subj')?.textContent || 'subject'
+    downloadChartSvg(chart, `${subj}_${currentMetric}_${suffix}`)
+  })
+}
+
 const mvLabel = (base, n) => (n > 1 ? `${base} (n=${n})` : base)
 
 // Mahalanobis-by-depth: mean line per hemisphere plus dashed ±SD band across
@@ -2204,6 +2242,7 @@ function renderRadarBar(data, depth) {
 }
 
 function clearMultivariate() {
+  clearTimeout(mvDebounceTimer)
   mvCurrent = null
   Plotly.restyle(chartMahal, { x: [[], [], [], [], [], []], y: [[], [], [], [], [], []] }, [0, 1, 2, 3, 4, 5])
   Plotly.restyle(chartRadar, { r: [[], [], [], [], [], []], theta: [[], [], [], [], [], []] }, [0, 1, 2, 3, 4, 5])
@@ -2214,23 +2253,40 @@ function clearMultivariate() {
 // panels. ringSet mirrors the neighbor-ring set used by the univariate charts,
 // so both sets of panels aggregate over exactly the same vertices.
 async function updateMultivariate(vertIdx, ringSet) {
-  if (!MV_AVAILABLE) return
+  if (!MV_AVAILABLE || !showMultivariate) return
   const verts = (ringSet && ringSet.length) ? ringSet : [vertIdx]
   const key = `${vertIdx}:${nRings}`
+  const loadingEl = document.getElementById('multivariateLoading')
   try {
     let data = mvCache[key]
     if (!data) {
+      loadingEl.style.display = ''
       const r = await fetch(`/mahal?vertex=${vertIdx}&vertices=${verts.join(',')}`)
       if (!r.ok) return
       data = await r.json()
       mvCache[key] = data
     }
+    if (!showMultivariate) return   // toggled off while the fetch was in flight
     mvCurrent = data
     renderMahalChart(data)
     renderRadarBar(data, currentDepth)
   } catch (e) {
     console.warn('[multivariate] fetch/render failed', e)
+  } finally {
+    loadingEl.style.display = 'none'
   }
+}
+
+// Debounced trigger for vertex-jump-driven updates: only the vertex the user
+// settles on (mouse stops moving/clicking for MV_DEBOUNCE_MS) pays for the
+// Mahalanobis recompute, so scanning quickly across several vertices doesn't
+// queue up one full fetch+compute per vertex passed through.
+const MV_DEBOUNCE_MS = 250
+let mvDebounceTimer = null
+function scheduleMultivariateUpdate(vertIdx, ringSet) {
+  clearTimeout(mvDebounceTimer)
+  if (!MV_AVAILABLE || !showMultivariate) return
+  mvDebounceTimer = setTimeout(() => updateMultivariate(vertIdx, ringSet), MV_DEBOUNCE_MS)
 }
 
 function updateDepthMarker(mm) {

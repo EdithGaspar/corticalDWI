@@ -91,6 +91,12 @@ button.cbtn:hover { background: #484848; }
 #grid.has-max > .cell:not(.maxed) { display: none; }
 #grid.has-max > .rgutter { display: none; }
 #grid.has-max > .cell.maxed { grid-row: 1 / -1 !important; grid-column: 1 / -1 !important; }
+/* "Show multivariate" off: drop row 4 (Mahalanobis/radar/z-score) and its
+   gutter entirely, rather than leaving empty charts. :not(.maxed) so a
+   panel maximized before the toggle was switched off stays visible. */
+#grid.mv-hidden { grid-template-rows: var(--gr1,1fr) 7px var(--gr2,1fr) 7px var(--gr3,1fr); }
+#grid.mv-hidden > .grow4:not(.maxed) { display: none; }
+#grid.mv-hidden > .rgutter[data-below="4"] { display: none; }
 canvas.nv-canvas { display: block; width: 100% !important; height: 100% !important; }
 .clabel {
   position: absolute; top: 4px; left: 6px; z-index: 10;
@@ -284,10 +290,12 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
   <section class="ctl-group">
     <h3 class="ctl-h">Plots</h3>
     <div class="ctl-row"><label><input type="checkbox" id="showNormativeChk" title="Fetch and overlay cohort normative mean ± SD (computed lazily on first use)"> Show normative</label>
-      <span id="normativeLoading" class="loading-badge" style="display:none">loading…</span></div>
+      <span id="normativeLoading" class="loading-badge" style="display:none">calculating…</span></div>
+    <div class="ctl-row"><label><input type="checkbox" id="showMultivariateChk" title="Compute the Mahalanobis distance / radar / z-score panels — off by default because the Mahalanobis fit gets more expensive as the cohort grows"> Show multivariate</label>
+      <span id="multivariateLoading" class="loading-badge" style="display:none">calculating…</span></div>
     <div class="ctl-row">
       <label title="Max |z| shown on the radar and z-score bar panels">|z|≤ <input type="number" id="mvZlimInput" min="0.5" step="0.5" value="3"></label>
-      <label title="Max Mahalanobis distance shown on the multivariate depth panel">Mahal≤ <input type="number" id="mvMahalInput" min="1" step="1" value="10"></label>
+      <label title="Max Mahalanobis distance shown on the multivariate depth panel">Mahal≤ <input type="number" id="mvMahalInput" min="0" step="1" value="50"></label>
     </div>
   </section>
 </aside>
@@ -348,14 +356,17 @@ canvas.nv-canvas { display: block; width: 100% !important; height: 100% !importa
   <!-- Row 4: multivariate explorer (Mahalanobis / |z| radar / z-score bars) -->
   <div class="cell plot-cell grow4">
     <span class="clabel" id="clabel-mahal">Mahalanobis distance</span>
+    <button class="svgbtn" id="svgBtnMahal" title="Save this chart as a vector SVG file">SVG</button>
     <div class="chart-wrap"><div id="chart-mahal" class="plotly-chart"></div></div>
   </div>
   <div class="cell plot-cell grow4">
     <span class="clabel" id="clabel-radar">|Z-score| radar</span>
+    <button class="svgbtn" id="svgBtnRadar" title="Save this chart as a vector SVG file">SVG</button>
     <div class="chart-wrap"><div id="chart-radar" class="plotly-chart"></div></div>
   </div>
   <div class="cell plot-cell grow4">
     <span class="clabel" id="clabel-zbar">Z-scores</span>
+    <button class="svgbtn" id="svgBtnZBar" title="Save this chart as a vector SVG file">SVG</button>
     <div class="chart-wrap"><div id="chart-zbar" class="plotly-chart"></div></div>
   </div>
 
