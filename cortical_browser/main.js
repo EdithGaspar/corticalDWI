@@ -1581,12 +1581,18 @@ async function selectVertex(vertIdx, nvInst) {
 
   let normStat = null
   if (showNormative && NORMATIVE[currentMetric]) {
-    const [normLh, normRh, normAsym] = await Promise.all([
-      normativeRingStat('lh',   currentMetric, ringSet),
-      normativeRingStat('rh',   currentMetric, ringSet),
-      normativeRingStat('asym', currentMetric, ringSet),
-    ])
-    normStat = { lh: normLh, rh: normRh, asym: normAsym }
+    const loadingEl = document.getElementById('normativeLoading')
+    loadingEl.style.display = ''
+    try {
+      const [normLh, normRh, normAsym] = await Promise.all([
+        normativeRingStat('lh',   currentMetric, ringSet),
+        normativeRingStat('rh',   currentMetric, ringSet),
+        normativeRingStat('asym', currentMetric, ringSet),
+      ])
+      normStat = { lh: normLh, rh: normRh, asym: normAsym }
+    } finally {
+      loadingEl.style.display = 'none'
+    }
   }
 
   setProfiles(meanStd(rowsOf(lhMat)), meanStd(rowsOf(rhMat)), meanStd(rowsOf(asymMat)), ringSet.length, lhArea, rhArea, normStat)
@@ -1948,9 +1954,11 @@ function depthProfileLayout() {
     font: { color: PLOT_TEXT, size: 10 },
     margin: { l: 46, r: 12, t: 30, b: 34 },
     showlegend: true,
-    legend: { orientation: 'h', x: 0, y: 1.2, font: { size: 10, color: PLOT_TEXT } },
+    legend: { orientation: 'h', x: 0, y: 1.2, font: { size: 9, color: PLOT_TEXT }, groupclick: 'togglegroup',
+              itemwidth: 30, tracegroupgap: 4 },
     dragmode: false,
     hovermode: 'closest',
+    hoverdistance: 50,
     xaxis: { nticks: 5, color: PLOT_TEXT, gridcolor: '#303030', zerolinecolor: '#303030', tickfont: { size: 10 } },
     yaxis: { autorange: 'reversed', title: { text: 'Depth (mm)', font: { color: PLOT_TEXT } },
              nticks: 8, tickformat: '.1f', color: PLOT_TEXT, gridcolor: '#303030', zerolinecolor: '#303030',
@@ -1962,16 +1970,19 @@ function depthProfileLayout() {
 
 function profileTraces(color, label, fillToZero) {
   return [
-    { x: [], y: [], name: label, mode: 'lines+markers',
-      line: { color, width: 2, shape: 'spline', smoothing: 0.5 }, marker: { size: 3 },
-      fill: fillToZero ? 'tozerox' : 'none', fillcolor: hexToRgba(color, 0.16) },
-    { x: [], y: [], mode: 'lines', line: { width: 0 }, showlegend: false, hoverinfo: 'skip' },
-    { x: [], y: [], mode: 'lines', line: { width: 0 }, fill: 'tonextx', fillcolor: hexToRgba(color, 0.18),
-      showlegend: false, hoverinfo: 'skip' },
-    { x: [], y: [], name: 'Normative', mode: 'lines', line: { color: '#ffffff', width: 1.5 } },
-    { x: [], y: [], mode: 'lines', line: { width: 0 }, showlegend: false, hoverinfo: 'skip' },
-    { x: [], y: [], mode: 'lines', line: { width: 0 }, fill: 'tonextx', fillcolor: 'rgba(160,160,160,0.30)',
-      showlegend: false, hoverinfo: 'skip' },
+    { x: [], y: [], name: label, mode: 'lines+markers', legendgroup: 'subject',
+      line: { color, width: 3, shape: 'spline', smoothing: 0.5 }, marker: { size: 1 },
+      fill: fillToZero ? 'tozerox' : 'none', fillcolor: hexToRgba(color, 0.16),
+      hovertemplate: '%{y:.1f} mm: %{x:.2g}<extra>%{fullData.name}</extra>' },
+    { x: [], y: [], mode: 'lines', legendgroup: 'subject', line: { width: 0 }, showlegend: false, hoverinfo: 'skip' },
+    { x: [], y: [], mode: 'lines', legendgroup: 'subject', line: { width: 0 }, fill: 'tonextx',
+      fillcolor: hexToRgba(color, 0.18), showlegend: false, hoverinfo: 'skip' },
+    { x: [], y: [], name: 'Normative', mode: 'lines', legendgroup: 'normative',
+      line: { color: '#ffffff', width: 1.5 },
+      hovertemplate: '%{y:.1f} mm: %{x:.2g}<extra>%{fullData.name}</extra>' },
+    { x: [], y: [], mode: 'lines', legendgroup: 'normative', line: { width: 0 }, showlegend: false, hoverinfo: 'skip' },
+    { x: [], y: [], mode: 'lines', legendgroup: 'normative', line: { width: 0 }, fill: 'tonextx',
+      fillcolor: 'rgba(160,160,160,0.30)', showlegend: false, hoverinfo: 'skip' },
   ]
 }
 
@@ -2024,30 +2035,33 @@ applyAsymValueLimits()
 
 // ── multivariate explorer charts (row 4) ─────────────────────────────────────
 const mvFont = { size: 10, color: PLOT_TEXT }
+const mvLegend = { orientation: 'h', x: 0, font: { size: 9, color: PLOT_TEXT }, itemwidth: 30, tracegroupgap: 4 }
 
 // Mahalanobis distance vs depth — a mean line per hemisphere with a dashed
 // ±SD band (mirroring the univariate profile charts; the band is only
 // populated when >1 vertex is selected), plus the shared yellow depth
 // reference line. Clicking sets the depth, like the profile charts.
-function mahalSdBand(color) {
+function mahalSdBand(color, group) {
   return [
-    { x: [], y: [], mode: 'lines', line: { width: 0 }, showlegend: false, hoverinfo: 'skip' },
-    { x: [], y: [], mode: 'lines', line: { width: 0 }, fill: 'tonextx', fillcolor: hexToRgba(color, 0.18),
-      showlegend: false, hoverinfo: 'skip' },
+    { x: [], y: [], mode: 'lines', legendgroup: group, line: { width: 0 }, showlegend: false, hoverinfo: 'skip' },
+    { x: [], y: [], mode: 'lines', legendgroup: group, line: { width: 0 }, fill: 'tonextx',
+      fillcolor: hexToRgba(color, 0.18), showlegend: false, hoverinfo: 'skip' },
   ]
 }
 chartMahal = document.getElementById('chart-mahal')
 Plotly.newPlot(chartMahal, [
-  { x: [], y: [], name: 'LH', mode: 'lines+markers', line: { color: LH_COLOR, width: 2 }, marker: { size: 3 } },
-  ...mahalSdBand(LH_COLOR),
-  { x: [], y: [], name: 'RH', mode: 'lines+markers', line: { color: RH_COLOR, width: 2 }, marker: { size: 3 } },
-  ...mahalSdBand(RH_COLOR),
+  { x: [], y: [], name: 'LH', mode: 'lines+markers', legendgroup: 'lh',
+    line: { color: LH_COLOR, width: 3 }, marker: { size: 1 } },
+  ...mahalSdBand(LH_COLOR, 'lh'),
+  { x: [], y: [], name: 'RH', mode: 'lines+markers', legendgroup: 'rh',
+    line: { color: RH_COLOR, width: 3 }, marker: { size: 1 } },
+  ...mahalSdBand(RH_COLOR, 'rh'),
 ], {
   paper_bgcolor: '#242424', plot_bgcolor: '#242424',
   font: mvFont,
   margin: { l: 46, r: 12, t: 30, b: 34 },
   showlegend: true,
-  legend: { orientation: 'h', x: 0, y: 1.2, font: mvFont },
+  legend: { ...mvLegend, y: 1.2, groupclick: 'togglegroup' },
   dragmode: false, hovermode: 'closest',
   xaxis: { range: [0, mvMahalLim], title: { text: 'Mahalanobis distance', font: { color: PLOT_TEXT } },
            color: PLOT_TEXT, gridcolor: '#303030', tickfont: { size: 10 } },
@@ -2064,28 +2078,28 @@ chartMahal.addEventListener('click', e => setDepthFromChart(chartMahal, e.client
 // doesn't auto-close the polygon like Chart.js's radar did, so closeLoop()
 // repeats the first point at the end of both r and theta.
 const closeLoop = arr => (arr.length ? [...arr, arr[0]] : arr)
-function radarSdBand(color) {
+function radarSdBand(color, group) {
   return [
-    { r: [], theta: [], type: 'scatterpolar', mode: 'lines', line: { color, width: 1, dash: 'dash' },
-      showlegend: false, hoverinfo: 'skip' },
-    { r: [], theta: [], type: 'scatterpolar', mode: 'lines', line: { color, width: 1, dash: 'dash' },
-      showlegend: false, hoverinfo: 'skip' },
+    { r: [], theta: [], type: 'scatterpolar', mode: 'lines', legendgroup: group,
+      line: { color, width: 1, dash: 'dash' }, showlegend: false, hoverinfo: 'skip' },
+    { r: [], theta: [], type: 'scatterpolar', mode: 'lines', legendgroup: group,
+      line: { color, width: 1, dash: 'dash' }, showlegend: false, hoverinfo: 'skip' },
   ]
 }
 chartRadar = document.getElementById('chart-radar')
 Plotly.newPlot(chartRadar, [
-  { r: [], theta: [], type: 'scatterpolar', name: 'LH', mode: 'lines+markers',
+  { r: [], theta: [], type: 'scatterpolar', name: 'LH', mode: 'lines+markers', legendgroup: 'lh',
     line: { color: LH_COLOR, width: 2 }, marker: { size: 4 } },
-  ...radarSdBand(LH_COLOR),
-  { r: [], theta: [], type: 'scatterpolar', name: 'RH', mode: 'lines+markers',
+  ...radarSdBand(LH_COLOR, 'lh'),
+  { r: [], theta: [], type: 'scatterpolar', name: 'RH', mode: 'lines+markers', legendgroup: 'rh',
     line: { color: RH_COLOR, width: 2 }, marker: { size: 4 } },
-  ...radarSdBand(RH_COLOR),
+  ...radarSdBand(RH_COLOR, 'rh'),
 ], {
   paper_bgcolor: '#242424',
   font: mvFont,
   margin: { l: 30, r: 30, t: 20, b: 20 },
   showlegend: true,
-  legend: { orientation: 'h', x: 0, y: 1.15, font: mvFont },
+  legend: { ...mvLegend, y: 1.15, groupclick: 'togglegroup' },
   dragmode: false,
   polar: {
     bgcolor: '#242424',
@@ -2113,7 +2127,7 @@ Plotly.newPlot(chartZBar, [
   font: mvFont,
   margin: { l: 70, r: 15, t: 10, b: 34 },
   showlegend: true,
-  legend: { orientation: 'h', x: 0, y: 1.15, font: mvFont },
+  legend: { ...mvLegend, y: 1.15 },
   dragmode: false,
   barmode: 'group',
   xaxis: { range: [-mvZlim, mvZlim], title: { text: 'Z-score', font: { color: PLOT_TEXT } },
