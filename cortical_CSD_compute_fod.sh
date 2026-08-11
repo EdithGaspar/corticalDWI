@@ -56,6 +56,14 @@ fod_wm=${SUBJECTS_DIR}/${sID}/dwi/csd/fod_wm.mif
 fod_gm=${SUBJECTS_DIR}/${sID}/dwi/csd/fod_gm.mif
 fod_csf=${SUBJECTS_DIR}/${sID}/dwi/csd/fod_csf.mif
 
+if [ -f $fod_wm ]
+then
+  echolor yellow "[WARN] FOD files already exist. NOT overwriting:"
+  echolor yellow "          $fod_wm"
+  exit 0
+fi
+
+
 my_do_cmd dwi2fod msmt_csd \
   -mask $mask \
   -grad $scheme \

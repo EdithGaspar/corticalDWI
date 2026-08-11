@@ -2,6 +2,31 @@
 
 This tutorial will show all the steps necessary to run the entire pipeline for the analysis of dMRI-derived metrics within the cortex and the superficial WM (SWM). **Please get in contact with us if you plan to use this pipeline.**
 
+## Table of contents
+
+- [Requirements](#requirements)
+  - [Software](#software)
+  - [Data](#data)
+- [Run freesurfer](#run-freesurfer)
+  - [Prepare environment](#prepare-environment)
+  - [Run freesurfer](#run-freesurfer-1)
+    - [Check freesurfer output](#check-freesurfer-output)
+- [Running corticalDWI](#running-corticaldwi)
+  - [Add the DWIs to the freesurfer file structure](#add-the-dwis-to-the-freesurfer-file-structure)
+- [Run the CorticalDWI pipeline!](#run-the-corticaldwi-pipeline)
+  - [Prepare configuration file](#prepare-configuration-file)
+  - [RUN IT NOW, stop talking (tl;dr) :](#run-it-now-stop-talking-tldr)
+  - [Details about pipeline](#details-about-pipeline)
+    - [Resample surfaces](#resample-surfaces)
+    - [Compute streamlines](#compute-streamlines)
+    - [Register T1/dwi](#register-t1dwi)
+    - [Warp streamlines to DWI space](#warp-streamlines-to-dwi-space)
+    - [Resample and truncate the streamlines](#resample-and-truncate-the-streamlines)
+    - [CSD](#csd)
+    - [MRDS](#mrds)
+    - [Sample fixels](#sample-fixels)
+    - [Other DWi models](#other-dwi-models)
+
 # Requirements
 ## Software
 This pipeline includes several tools scattered around many different software suites, as well as some custom-made scripts and tools. In this tutorial we are using the computing cluster at the Institute of Neurobiology, at UNAM, where the tools are already installed. You may need to install them manually outside of our cluster. Some day we will create a singularity/apptainer container, but in the meantime here is the list of tools needed:
@@ -163,12 +188,12 @@ mrview ${SUBJECTS_DIR}/$subjid/mri/aparc+aseg.nii.gz -fixel.load $subjid/mri/lap
 
 ![laplacian vectors](images/laplacian_vectors.png)
 
-## Resample surfaces
+### Resample surfaces
 This resamples the freesurfer's white and pial surfaces to whatever `$target_type` you want, typically `ico6_sym`. This is a custom-made surface based on a sixth order icosahedron. The beauty of this template is that it will allow us to have _very_ good vertex-wise inter-hemispheric correspondence per subject, improving asymmetry analyses.  It will also create surfaces with scanner coordinates, which we will use to compute the streamlines in the next step. Results are saved in the `surf` folder.
 ```bash
 cortical_resample_surface_ico6_sym.sh $subjid
 ```
-## Compute streamlines
+### Compute streamlines
 ```bash
 cortical_compute_streamlines.sh $subjid
 ```
@@ -177,7 +202,7 @@ When it finishes, you can see in cyan the suggested command to check the results
 ![laplacians](images/laplacian_streamlines.png)
 
 
-## Register T1/dwi
+### Register T1/dwi
 This step uses `mri_synthseg` to segment both T1 and the DWIs, followed by registration of these two segmentations via ANTs. Ideally, use a PC with at least 32 GB of RAM and plenty of CPU threads.
 ```bash
 cortical_register_t1_to_dwi.sh $subjid
@@ -186,7 +211,7 @@ cortical_register_t1_to_dwi.sh $subjid
 The command itself will tell you how to check your results. Use the <kbd>PgUp</kbd> and <kbd>PgDn</kbd> keys to switch between volumes, and make sure that the registration is as good as can be. Check the cortex in the frontal and temporal poles.
 
 
-## Warp streamlines to DWI space
+### Warp streamlines to DWI space
 Streamlines were created in t1 native space, because that is where the surfaces were generated. However, what we want to sample is in dwi space. Now, _we could_ transform all DWI-derived maps to t1 space and sample there, but that would be a hassle, since we would need to transform all vector-related stuff (fixels, principal diffusion directions, etc). So, instead we bring the t1-derived streamlines over to the dwi world.
 ```bash
 cortical_warp_tck_to_dwi.sh $subjid
@@ -196,16 +221,25 @@ When the script finishes, it will tell you how to visualize the results, go ahea
 ![laplacian_streamlines_dwi](images/laplacian_streamlines_dwi.png)
 
 
-## Resample and truncate the streamlines
+### Resample and truncate the streamlines
 To ensure correct sampling as a function of depth from the pial surface, we should ensure equidistant points between the vertices of each streamline according to our desired spatial sampling rate (step size). While we're at it, we truncate the streamlines after a certain depth. This will allow us to visualize only what we are truly sampling.
 
 
 
-## CSD
+### CSD
 Now we compute constrained spherical deconvolution across the entire brain, including the fixels directory that we will then use to extract apparent fiber density per fixel.
+This requires three steps:
+
+1. Compute response functions (per-subject)
+2. Average all response functions (group-wise)
+3. Compute FODs using the average response function (per-subject)
+
+The corresponding order of scripts is:
 
 ```bash
-cortical_CSD.sh $subji
+cortical_CSD_individual_response.sh $subji
+cortical_CSD_average_response.sh
+cortical_CSD_compute_fod.sh $subjid
 ```
 
 Two versions of CSD will be computed, each with its own advantages and disadvantages.
@@ -215,7 +249,7 @@ Two versions of CSD will be computed, each with its own advantages and disadvant
 ![alt text](images/fod_fixels.png)
 
 
-## MRDS
+### MRDS
 Here we fit one, two, or three tensors to each voxel throughout the brain using multi-resolution discrete search [(Coronado-Leija, Ramírez-Manzanares & Marroquín, 2017)](https://doi.org/10.1016/j.media.2017.06.008). The optimal number of tensors that best explain the underlying signal (per voxel) is estimated with Bayes' information criterion (BIC). This is a _very_ time-consuming step, expect around 24 per subject on a multi-core workstation! You have been warned! 
 
 ```bash
@@ -224,7 +258,7 @@ cortical_MRDS.sh $subjid
 :information_source: Let's focus on CSD for this tutorial and skip MRDS.
 
 
-## Sample fixels
+### Sample fixels
 Ah, the final frontier! Let's get the AFD values along the laplacian streamlines, separating those derived from the FODs mostly aligned parallel to the streamline, to those that are perpendicular to it; the first is related to radial fibers entering and exiting the cortex to and from the deep white matter, while the second represents fibers running tangential to the pial surface, likely inter-columnar fibers (within the cortex) and U-fibers (in the superficial white matter). To make nomenclature clear:
 
 
@@ -241,7 +275,7 @@ We must have the custom-made mrtrix modules in our `$PATH`. They can be obtained
   * The fixel showing the largest dot product to the streamline segment is assigned as **parallel**.
   * **Perpendicular** can be defined in two ways: either the most perpendicular (i.e., lowest dot product), or the average of all fixels except the one defined as parallel. Both are supplied as results.
 
-## Other DWi models
+### Other DWi models
 Some DWI metrics are not fixel-based (e.g., DTI, DKI metrics), and therefore do not specify par or perp.
 
 ```bash

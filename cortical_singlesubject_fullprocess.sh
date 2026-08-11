@@ -53,9 +53,9 @@ cortical_DTI.sh $subjid
 cortical_tcksample_dti.sh $subjid
 
 # CSD
-cortical_individual_response_CSD.sh $subjid
-#cortical_average_response.sh; # this is a step that needs to run once all subjects had cortical_individual_response_CSD.sh run, to create the average response function
-cortical_compute_fod_CSD.sh $subjid
+cortical_CSD_individual_response.sh $subjid
+#cortical_CSD_average_response.sh; # this is a step that needs to run once all subjects had cortical_individual_response_CSD.sh run, to create the average response function
+cortical_CSD_compute_fod.sh $subjid
 cortical_tcksamplefixels_afd.sh $subjid
 
 # MRDS
