@@ -26,10 +26,13 @@ aseg=${SUBJECTS_DIR}/${sID}/mri/aseg.mgz
 brainmask=${SUBJECTS_DIR}/${sID}/mri/brainmask.mgz
 
 flair_proc=${SUBJECTS_DIR}/${sID}/mri/flair_proc.nii.gz
+t1_over_flair=${SUBJECTS_DIR}/${sID}/mri/T1_over_FLAIR.nii.gz
 
-if [ -f $flair_proc ]
+if [ -f $flair_proc -a -f $t1_over_flair ]
 then
-  echolor green "[INFO] Processed flair already exists: $flair_proc"
+  echolor green "[INFO] Processed flair already exists:"
+  echolor green "       $flair_proc"
+  echolor green "       $t1_over_flair"
   echolor green "[INFO] Will not overwrite."
   exit 0
 fi
@@ -144,7 +147,7 @@ else
     $t1_proc \
     $flair_proc \
     -div \
-    ${SUBJECTS_DIR}/${sID}/mri/T1_over_FLAIR.nii.gz
+    $t1_over_flair
 
 fi
 
