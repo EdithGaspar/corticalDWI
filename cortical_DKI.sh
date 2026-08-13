@@ -32,6 +32,13 @@ then
 fi
 
 
+fcheck=${SUBJECTS_DIR}/${sID}/dwi/dki/mk.nii.gz
+if [ -f $fcheck ]
+then
+  echolor green "[INFO] Found existing DKI results, will not overwrite: $fcheck"
+  exit 2
+fi
+
 dwi=${SUBJECTS_DIR}/${sID}/dwi/dwi.nii.gz
 bvec=${SUBJECTS_DIR}/${sID}/dwi/dwi.bvec
 bval=${SUBJECTS_DIR}/${sID}/dwi/dwi.bval
@@ -50,6 +57,7 @@ do
   fi
 done
 if [ $isOK -eq 0 ]; then exit 2; fi
+
 
 
 my_do_cmd dipy_fit_dki \
