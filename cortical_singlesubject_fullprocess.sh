@@ -66,6 +66,10 @@ cortical_tcksamplefixels_mrds.sh $subjid
 cortical_DKI.sh $subjid
 cortical_tcksample_dki.sh $subjid
 
+# NODDI
+cortical_NODDI.sh $subjid
+cortical_tcksample_noddi.sh $subjid
+
 # Structural imaging
 cortical_proc_t1.sh $subjid
 cortical_proc_FLAIR.sh $subjid
