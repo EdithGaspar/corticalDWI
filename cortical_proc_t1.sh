@@ -43,6 +43,11 @@ else
 fi
 
 
+if [ -f $outT1w ]
+then
+  echolor green "[INFO] Found existing processed T1w image, will not overwrite: $outT1w"
+  exit 2
+fi
 
 
 

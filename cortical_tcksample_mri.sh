@@ -62,8 +62,8 @@ do
     tsfout=${SUBJECTS_DIR}/${subjID}/mri/${hemi}_${target_type}_${metric}.tsf
     if [ -f $tsfout ]
     then
-      echolor yellow "[WARN] File exists, will not overwrite: $tsfout"
-      echolor yellow "[WARN] Not going to sample any metric."
+      echolor green "[INFO] File exists, will not overwrite: $tsfout"
+      echolor green "[INFO] Not going to sample any metric."
       exit 0
     fi
 
