@@ -63,8 +63,7 @@ do
     if [ -f $tsfout ]
     then
       echolor green "[INFO] File exists, will not overwrite: $tsfout"
-      echolor green "[INFO] Not going to sample any metric."
-      exit 0
+      continue
     fi
 
     if [ ! -f $map ]
