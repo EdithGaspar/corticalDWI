@@ -79,7 +79,7 @@ do
       echo "looking for $fcheck"
       if [ -f $fcheck ]
       then
-      echolor yellow "[WARN] File exists, will not overwrite: $fcheck"
+      echolor green "[WARN] File exists, will not overwrite: $fcheck"
       exit 0
       fi
 

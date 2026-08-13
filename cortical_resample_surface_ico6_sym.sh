@@ -38,6 +38,14 @@ SUBJECT=$1
 SURF=$SUBJECTS_DIR/$SUBJECT/surf
 XHEMI=$SUBJECTS_DIR/$SUBJECT/xhemi/surf
 
+
+fcheck=$SURF/lh_white_ico6_sym.surf.gii
+if [ -f $fcheck ]
+then
+  echolor green "[INFO] File exists, will not overwrite: $fcheck"
+  exit 0
+fi
+
 echo "========================================"
 echo " Subject : $SUBJECT"
 echo " SURF    : $SURF"

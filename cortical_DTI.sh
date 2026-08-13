@@ -32,6 +32,16 @@ then
 fi
 
 
+outdir=${SUBJECTS_DIR}/${sID}/dwi/dti
+
+fcheck=${outdir}/fa.nii.gz
+if [ -f $fcheck ]
+then
+  echolor green "[INFO] Found existing DTI results, will not overwrite: $fcheck"
+  exit 2
+fi
+
+
 dwi=${SUBJECTS_DIR}/${sID}/dwi/dwi.nii.gz
 bvec=${SUBJECTS_DIR}/${sID}/dwi/dwi.bvec
 bval=${SUBJECTS_DIR}/${sID}/dwi/dwi.bval
@@ -52,7 +62,7 @@ done
 if [ $isOK -eq 0 ]; then exit 2; fi
 
 
-outdir=${SUBJECTS_DIR}/${sID}/dwi/dti
+
 mkdir -pv $outdir
 dwi2tensor -mask $mask \
     -grad $scheme \

@@ -49,8 +49,6 @@ then
 fi
 
 
-# Compute multitissue fod's and fixels
-echolor green "[INFO] Performing multi-tissue CSD"
 
 fod_wm=${SUBJECTS_DIR}/${sID}/dwi/csd/fod_wm.mif
 fod_gm=${SUBJECTS_DIR}/${sID}/dwi/csd/fod_gm.mif
@@ -58,10 +56,13 @@ fod_csf=${SUBJECTS_DIR}/${sID}/dwi/csd/fod_csf.mif
 
 if [ -f $fod_wm ]
 then
-  echolor yellow "[WARN] FOD files already exist. NOT overwriting:"
-  echolor yellow "          $fod_wm"
+  echolor green "[INFO] FOD files already exist. NOT overwriting: $fod_wm"
   exit 0
 fi
+
+
+# Compute multitissue fod's and fixels
+echolor green "[INFO] Performing multi-tissue CSD"
 
 
 my_do_cmd dwi2fod msmt_csd \

@@ -101,11 +101,9 @@ echolor green "[INFO] Will fit MRDS in $nVoxels voxels"
 
 doComputeMRDS=1
 fcheck=$(ls ${outbase}_MRDS_Diff_FTest_FA.ni*)
-echolor green "[INFO] Looking for file: $fcheck"
 if [ ! -z ${fcheck} ]
 then
-  echolor yellow "[INFO] File found $fcheck"
-  echolor yellow "[INFO] Will not re-compute MRDS files. Delete previous output if you want to re-run."
+  echolor green "[INFO] File found $fcheck"
   doComputeMRDS=0
 fi
 
@@ -150,7 +148,7 @@ then
   my_do_cmd $cmd
 
 else
-  echolor yellow "[INFO] Will not run MRDS"
+  echolor green "[INFO] Will not run MRDS"
 fi
 
 gzip -v ${outbase}_DTInolin*.nii ${outbase}_MRDS_*.nii
@@ -158,11 +156,10 @@ gzip -v ${outbase}_DTInolin*.nii ${outbase}_MRDS_*.nii
 
 doFixels=1
 fcheck=${outdir}/mrds_fixels/index.mif
-echolor green "[INFO] Looking for file: $fcheck"
 if [ -f $fcheck ]
 then
-  echolor yellow "[INFO] File found $fcheck"
-  echolor yellow "       Will not overwrite."
+  echolor green "[INFO] File found $fcheck"
+  echolor green "       Will not overwrite."
   doFixels=0
 fi
 

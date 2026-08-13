@@ -30,6 +30,14 @@ then
   exit 2
 fi
 
+outdir=${SUBJECTS_DIR}/${sID}/dwi/csd
+fcheck=${outdir}/response_wm.txt
+if [ -f $fcheck ]
+then
+  echolor green "[INFO] Found existing response functions, will not overwrite: $fcheck"
+  exit 2
+fi
+
 
 dwi=${SUBJECTS_DIR}/${sID}/dwi/dwi.nii.gz
 bvec=${SUBJECTS_DIR}/${sID}/dwi/dwi.bvec
@@ -51,7 +59,6 @@ done
 if [ $isOK -eq 0 ]; then exit 2; fi
 
 
-outdir=${SUBJECTS_DIR}/${sID}/dwi/csd
 mkdir -pv $outdir
 resp_wm=${outdir}/response_wm.txt
 resp_gm=${outdir}/response_gm.txt

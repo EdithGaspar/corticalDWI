@@ -30,6 +30,14 @@ then
   exit 0
 fi
 
+fcheck=${SUBJECTS_DIR}/${sID}/mri/laplace-wm_vec.nii.gz
+if [ -f $fcheck ]
+then
+  echolor green "[INFO] Found existing Laplacian field, will not overwrite: $fcheck"
+  exit 2
+fi
+
+
 ### Laplacian field
 echolor cyan "[INFO] Calculating Laplace Field"
 

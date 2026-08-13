@@ -55,7 +55,6 @@ fi
 
 
 fcheck=${fixel_dir}/rh_${target_type}_afd-par.tsf
-echolor bold "Looking for $fcheck"
 if [ -f $fcheck ]
 then
   echolor green "[INFO] File exists, will not overwrite: $fcheck"

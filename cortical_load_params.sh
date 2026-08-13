@@ -33,6 +33,6 @@ unset _clp_dir
 
 # ── Study-level overrides ─────────────────────────────────────────────────────
 if [[ -n "$SUBJECTS_DIR" && -f "${SUBJECTS_DIR}/corticalDWI_params.conf" ]]; then
-    echolor green "[INFO] Loading study-specific parameters: ${SUBJECTS_DIR}/corticalDWI_params.conf"
+    echo " [INFO] Loading study-specific parameters: ${SUBJECTS_DIR}/corticalDWI_params.conf"
     source "${SUBJECTS_DIR}/corticalDWI_params.conf"
 fi

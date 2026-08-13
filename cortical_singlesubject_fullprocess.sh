@@ -9,6 +9,8 @@
 #
 # Make sure you have a configuration file named $SUBJECTS_DIR/corticalDWI_params.conf
 
+source `which my_do_cmd`
+
 
 
 status=$(cortical_check_environment.sh)
@@ -42,38 +44,38 @@ date
 hostname
 # --- Begin --------------------------------------
 # Prepare streamlines
-cortical_compute_laplacian.sh $subjid
-cortical_resample_surface_ico6_sym.sh $subjid
-cortical_compute_streamlines.sh $subjid
-cortical_register_t1_to_dwi.sh $subjid
-cortical_warp_tck_to_dwi.sh $subjid
+my_do_cmd cortical_compute_laplacian.sh $subjid
+my_do_cmd cortical_resample_surface_ico6_sym.sh $subjid
+my_do_cmd cortical_compute_streamlines.sh $subjid
+my_do_cmd cortical_register_t1_to_dwi.sh $subjid
+my_do_cmd cortical_warp_tck_to_dwi.sh $subjid
 
 # DTI
-cortical_DTI.sh $subjid
-cortical_tcksample_dti.sh $subjid
+my_do_cmd cortical_DTI.sh $subjid
+my_do_cmd cortical_tcksample_dti.sh $subjid
 
 # CSD
-cortical_CSD_individual_response.sh $subjid
+my_do_cmd cortical_CSD_individual_response.sh $subjid
 #cortical_CSD_average_response.sh; # this is a step that needs to run once all subjects had cortical_individual_response_CSD.sh run, to create the average response function
-cortical_CSD_compute_fod.sh $subjid
-cortical_tcksamplefixels_afd.sh $subjid
+my_do_cmd cortical_CSD_compute_fod.sh $subjid
+my_do_cmd cortical_tcksamplefixels_afd.sh $subjid
 
 # MRDS
-cortical_MRDS.sh $subjid
-cortical_tcksamplefixels_mrds.sh $subjid
+my_do_cmd cortical_MRDS.sh $subjid
+my_do_cmd cortical_tcksamplefixels_mrds.sh $subjid
 
 # DKI
-cortical_DKI.sh $subjid
-cortical_tcksample_dki.sh $subjid
+my_do_cmd cortical_DKI.sh $subjid
+my_do_cmd cortical_tcksample_dki.sh $subjid
 
 # NODDI
-cortical_NODDI.sh $subjid
-cortical_tcksample_noddi.sh $subjid
+my_do_cmd cortical_NODDI.sh $subjid
+my_do_cmd cortical_tcksample_noddi.sh $subjid
 
 # Structural imaging
-cortical_proc_t1.sh $subjid
-cortical_proc_FLAIR.sh $subjid
-cortical_tcksample_mri.sh $subjid
+my_do_cmd cortical_proc_t1.sh $subjid
+my_do_cmd cortical_proc_FLAIR.sh $subjid
+my_do_cmd cortical_tcksample_mri.sh $subjid
 
 # --- END --------------------------------------
 date

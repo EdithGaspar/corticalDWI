@@ -36,8 +36,8 @@ fi
 fcheck=${SUBJECTS_DIR}/${sID}/dwi/t1native_to_b0_1Warp.nii.gz
 if [ -f $fcheck ]
 then
-  echolor orange "[INFO] File found $fcheck"
-  echolor orange "       Will not overwrite. Exitting now."
+  echolor green "[INFO] File found $fcheck"
+  echolor green "       Will not overwrite. Exitting now."
   exit 0
 fi
 

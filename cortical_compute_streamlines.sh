@@ -18,7 +18,6 @@ sID=$1
 
 CODEDIR=$(dirname $0)
 PYTHON=$(which python3)
-echolor cyan "[INFO] Using Python: $PYTHON ($(${PYTHON} --version 2>&1))"
 
 help() {
   echo "
@@ -41,6 +40,13 @@ if [ $# -lt 1 ]
 then
   echolor red "Incorrect number of arguments (subjID is required)"
   help
+  exit 0
+fi
+
+fcheck=${SUBJECTS_DIR}/${sID}/mri/${hemi}_${target_type}_laplace-wm-streamlines.tck
+if [ -f $fcheck ]
+then
+  echolor green "[INFO] File exists, will not overwrite: $fcheck"
   exit 0
 fi
 
