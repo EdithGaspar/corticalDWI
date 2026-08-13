@@ -15,3 +15,4 @@ dependencies:
   - pip:
     - scikit-fmm==2025.01.29
     - streamtracer
+    - dmri-amico
