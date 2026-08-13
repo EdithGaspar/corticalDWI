@@ -136,7 +136,7 @@ then
   -correction 0 \
   -response "$response" \
   -mask $mask \
-  -modsel ftest \
+  -modsel ftest,bic \
   -fa -md -mse \
   -method diff \
   -lowb 2000 \
