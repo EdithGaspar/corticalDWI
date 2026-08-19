@@ -103,6 +103,8 @@ src_labels = np.concatenate((np.arange(1000, 2999), [0]))
 # load data
 lbl_nib = nib.load(in_seg)
 lbl = lbl_nib.get_fdata()
+csf = np.isin(lbl,24) # CSF
+lbl[csf] = 0 # remove CSF from labelmap
 print('loaded data and parameters')
 
 # initialize foreground , source, and sink
