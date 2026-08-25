@@ -36,3 +36,14 @@ if [[ -n "$SUBJECTS_DIR" && -f "${SUBJECTS_DIR}/corticalDWI_params.conf" ]]; the
     echo " [INFO] Loading study-specific parameters: ${SUBJECTS_DIR}/corticalDWI_params.conf"
     source "${SUBJECTS_DIR}/corticalDWI_params.conf"
 fi
+
+# ── ITK/ANTs header tolerance ─────────────────────────────────────────────────
+# ITK's NIfTI writer round-trips the direction-cosine matrix through a quaternion
+# on every write, perturbing it by ~1e-6 even when no resampling occurred. This
+# routinely trips ITK's default "same physical space" check (also ~1e-6) between
+# files that passed through different writers (ANTs/ITK vs MRtrix vs FSL), e.g.
+# "Inputs do not occupy the same physical space" from N4BiasFieldCorrection or
+# DenoiseImage. Loosen the tolerance globally instead of re-syncing headers
+# after every ANTs call.
+export ITK_GLOBAL_DEFAULT_COORDINATE_TOLERANCE=1e-4
+export ITK_GLOBAL_DEFAULT_DIRECTION_TOLERANCE=1e-4

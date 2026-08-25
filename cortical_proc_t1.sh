@@ -1,5 +1,6 @@
 #!/bin/bash
 source `which my_do_cmd`
+source cortical_load_params.sh 2>/dev/null || true
 # module load freesurfer/7.3.2
 
 sID=$1;      # subject ID in the form of sub-74277

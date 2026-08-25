@@ -1,5 +1,6 @@
 #!/bin/bash
 source `which my_do_cmd`
+source cortical_load_params.sh 2>/dev/null || true
 # module load freesurfer/7.3.2
 
 sID=$1;      # subject ID in the form of sub-74277
@@ -51,7 +52,6 @@ asegnii=${tmpDir}/aseg.nii
 brainmasknii=${tmpDir}/brainmasknii.nii
 brainmasknii_flairspace=${tmpDir}/brainmasknii_flairspace.nii
 asegnii_flairspace=${tmpDir}/aseg_flairspace.nii
-
 my_do_cmd mrconvert $t1 $t1nii
 my_do_cmd mrcalc $brainmask 0 -gt $brainmasknii
 my_do_cmd mrconvert $aseg $asegnii
@@ -66,13 +66,14 @@ my_do_cmd WarpImageMultiTransform 3 \
   -i ${tmpDir}/ants_Affine.txt \
   -R $flair \
   --use-NN
+my_do_cmd fslcpgeom $flair $asegnii_flairspace
 my_do_cmd WarpImageMultiTransform 3 \
   $brainmasknii \
   $brainmasknii_flairspace \
   -i ${tmpDir}/ants_Affine.txt \
   -R $flair \
   --use-NN
-
+my_do_cmd fslcpgeom $flair $brainmasknii_flairspace
 
 # Perform N4
 flairN4=${tmpDir}/flair_N4.nii
@@ -80,6 +81,7 @@ my_do_cmd N4BiasFieldCorrection \
   -x $brainmasknii_flairspace \
   -i $flair \
   -o $flairN4
+my_do_cmd fslcpgeom $flair $flairN4
 
 # denoise
 flairDenoised=${tmpDir}/flair_denoised.nii
@@ -87,6 +89,7 @@ my_do_cmd DenoiseImage \
   -i $flairN4 \
   -x $brainmasknii_flairspace \
   -o $flairDenoised
+my_do_cmd fslcpgeom $flair $flairDenoised
 
 # Create mask from WM segmentation
 wmmask_flairspace=${tmpDir}/wmmaskflair.nii
@@ -120,6 +123,7 @@ my_do_cmd WarpImageMultiTransform 3 \
   ${tmpDir}/flair_in_t1space.nii \
   -R $t1nii \
   ${tmpDir}/ants_Affine.txt
+my_do_cmd fslcpgeom $t1nii ${tmpDir}/flair_in_t1space.nii
 
 
 my_do_cmd mrcalc \
@@ -150,7 +154,6 @@ else
     $t1_over_flair
 
 fi
-
 
 rm -fR $tmpDir
 #echolor green "tmpDir is $tmpDir"
