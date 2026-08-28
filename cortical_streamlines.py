@@ -131,8 +131,8 @@ if connect_to_pial :
         subprocess.run([
             "wb_command",
             "-surface-cortex-layer",
-            in_surf_pial,
             in_surf,
+            in_surf_pial,
             str(dist),
             tmpfile
         ], check=True)
